@@ -164,7 +164,7 @@ namespace FileExporterNew.Services
             }
         }
 
-        private async Task LogAllMetricsAsync(
+        private Task LogAllMetricsAsync(
             List<FailureReason> allFailures,
             List<FailureReason> recentFailures,
             Dictionary<string, (int failureCount, DateTime lastModified)> directoryMetrics,
@@ -176,16 +176,17 @@ namespace FileExporterNew.Services
             // Only log group folder metrics for grouped DN names
             if (_settings.GroupedDNnames.Contains(dName.ToLower()))
             {
-                await LogGroupFolderMetrics(allFailures, rootDir, path, dName, env, false);
-                await LogGroupFolderMetrics(recentFailures, rootDir, path, dName, env, true);
+                LogGroupFolderMetrics(allFailures, rootDir, path, dName, env, false);
+                LogGroupFolderMetrics(recentFailures, rootDir, path, dName, env, true);
             }
 
             // Log global metrics
             LogGlobalMetrics(allFailures.Count, rootDir, dName, env, false);
             LogGlobalMetrics(recentFailures.Count, rootDir, dName, env, true);
+            return Task.CompletedTask;
         }
 
-        private async Task LogGroupFolderMetrics(
+        private void LogGroupFolderMetrics(
             List<FailureReason> failureReasons,
             string rootDir,
             string path,
@@ -295,7 +296,7 @@ namespace FileExporterNew.Services
                     var imageFile = fr.Image;
                     if (string.IsNullOrEmpty(imageFile))
                     {
-                        imageFile = await FindFirstImageInDirAsync(fr.Path);
+                        imageFile = FindFirstImageInDirAsync(fr.Path);
                     }
                     
                     structuredReasons[fr.Path] = new
@@ -325,7 +326,7 @@ namespace FileExporterNew.Services
             }
         }
 
-        private async Task<string> FindFirstImageInDirAsync(string path)
+        private string FindFirstImageInDirAsync(string path)
         {
             return "test/test";
         }
