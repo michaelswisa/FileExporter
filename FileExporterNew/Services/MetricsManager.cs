@@ -22,7 +22,8 @@ namespace FileExporterNew.Services
                     _logger.LogInformation($"Creating new metric: {name}");
                     return Metrics.CreateGauge(name, description, new GaugeConfiguration
                     {
-                        LabelNames = labelName
+                        LabelNames = labelName,
+                        SuppressInitialValue = true // ✅ שיפור: לא מייצר child ריק
                     });
                 });
 
@@ -35,5 +36,16 @@ namespace FileExporterNew.Services
                 throw;
             }
         }
+
+        // ✅ פונקציה חדשה: מחיקת סדרה בודדת לפי ערכי label
+        public void RemoveGaugeSeries(string name, string[] labelValues)
+        {
+            if (_gauges.TryGetValue(name, out var gauge))
+            {
+                gauge.RemoveLabelled(labelValues);
+                _logger.LogInformation($"Removed series: {name} [{string.Join(',', labelValues)}]");
+            }
+        }
+
     }
 }

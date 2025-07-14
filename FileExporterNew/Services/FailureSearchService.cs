@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using FileExporterNew.Models;
@@ -11,6 +12,7 @@ namespace FileExporterNew.Services
         private readonly SemaphoreSlim _semaphore;
         private readonly MetricsManager _metricsManager;
         private readonly FileHelper _fileHelper;
+        private static readonly ConcurrentDictionary<string, HashSet<string>> _activeGroupFolderSeries = new();
 
         public FailureSearchService(
             IOptions<Settings> settings,
@@ -195,6 +197,8 @@ namespace FileExporterNew.Services
             bool isRecent)
         {
             var folderFailureCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var metricName = "n_failures_in_group_folder"; // Define metricName here
+            var currentKeys = new HashSet<string>(StringComparer.Ordinal); // Initialize currentKeys
 
             // 1. Get all "true" group folders (folders that contain other directories) and initialize their counts to 0.
             var allGroupFolders = GetAllGroupFolders(path, dName);
@@ -238,7 +242,24 @@ namespace FileExporterNew.Services
                     new[] { "root_dir", "d_name", "env", "group_folder", "is_recent" },
                     new[] { rootDir, dName, env, folderName, isRecent ? "true" : "false" },
                     failureCount);
+
+                // Add key to currentKeys for series tracking
+                var labelValuesForCurrentKey = new[] { rootDir, dName, env, folderName, isRecent ? "true" : "false" };
+                var key = BuildKey(labelValuesForCurrentKey);
+                currentKeys.Add(key);
             }
+
+            // Remove stale series for this dName + isRecent combination
+            var dNameAndRecentKey = $"{dName}_{isRecent}"; // Unique key for this specific d_name and is_recent combination
+            if (_activeGroupFolderSeries.TryGetValue(dNameAndRecentKey, out var previousKeys))
+            {
+                foreach (var stale in previousKeys.Except(currentKeys))
+                {
+                    var labelValues = SplitKey(stale);
+                    _metricsManager.RemoveGaugeSeries(metricName, labelValues);
+                }
+            }
+            _activeGroupFolderSeries[dNameAndRecentKey] = currentKeys;
         }
 
         private HashSet<string> GetAllGroupFolders(string searchPath, string dName)
@@ -330,6 +351,13 @@ namespace FileExporterNew.Services
         {
             return "test/test";
         }
+
+        // בניית key ייחודי לפי ערכי labels
+        private static string BuildKey(string[] labels) =>
+            string.Join('\u0001', labels);
+
+        private static string[] SplitKey(string key) =>
+            key.Split('\u0001');
 
         public void Dispose()
         {
