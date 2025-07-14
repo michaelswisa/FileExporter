@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using FileExporterNew.Models;
@@ -27,35 +28,37 @@ namespace FileExporterNew.Services
             _semaphore = new SemaphoreSlim(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
         }
 
+        // 2. הפונקציה הראשית — שימו לב לשינוי ב-finally
         public async Task SearchFolderForFailuresAsync(
             string rootDir,
             string path,
             string dName,
             string env)
         {
+            var stopwatch = Stopwatch.StartNew();
             _logger.LogDebug("SearchFolderForFailures on path: {Path}", path);
 
             try
             {
-                var normalizedDName = char.ToUpper(dName[0]) + dName.Substring(1);
+                var normalizedDName = char.ToUpper(dName[0]) + dName[1..];
 
-                // Single pass through all directories
                 var allFailureReasons = new List<FailureReason>();
                 var directoryMetrics = new Dictionary<string, (int failureCount, DateTime lastModified)>();
-                
-                await ScanDirectoryTreeAsync(rootDir, path, env, normalizedDName, allFailureReasons, directoryMetrics);
 
-                // Filter recent failures in memory
-                var now = DateTime.Now;
+                await ScanDirectoryTreeAsync(
+                    rootDir, path, env, normalizedDName,
+                    allFailureReasons, directoryMetrics);
+
                 var recentWindow = TimeSpan.FromMinutes(_settings.RecentErrorsTimeWindowMinutes);
+                var now = DateTime.Now;
                 var recentFailures = allFailureReasons
                     .Where(fr => (now - fr.LastWriteTime) <= recentWindow)
                     .ToList();
 
-                // Calculate and log metrics
-                await LogAllMetricsAsync(allFailureReasons, recentFailures, directoryMetrics, rootDir, path, normalizedDName, env);
+                await LogAllMetricsAsync(
+                    allFailureReasons, recentFailures, directoryMetrics,
+                    rootDir, path, normalizedDName, env);
 
-                // Save JSON files
                 await SaveFailureReasonsToJsonAsync(allFailureReasons, path, "reasons_all.json");
                 await SaveFailureReasonsToJsonAsync(recentFailures, path, "reasons_recent.json");
 
@@ -68,7 +71,34 @@ namespace FileExporterNew.Services
                 _logger.LogError(ex, "Error in SearchFolderForFailures");
                 throw;
             }
+            finally
+            {
+                stopwatch.Stop();
+                _logger.LogInformation(
+                    "Scan completed for {DName} in {Elapsed} ms",
+                    dName, stopwatch.ElapsedMilliseconds);
+
+                // קריאה לפונקציה הייעודית
+                RecordScanDurationMetric(
+                    rootDir, dName, env, stopwatch.ElapsedMilliseconds);
+            }
         }
+
+        // 1. פונקציית עזר אחראית רק על כתיבת המטריקה
+        private void RecordScanDurationMetric(
+            string rootDir,
+            string dName,
+            string env,
+            long elapsedMilliseconds)
+        {
+            _metricsManager.SetGaugeValue(
+                "dname_scan_duration_ms",
+                "Duration of d_name scan in milliseconds",
+                new[] { "root_dir", "d_name", "env" },
+                new[] { rootDir, dName, env },
+                elapsedMilliseconds);
+        }
+
 
         private async Task ScanDirectoryTreeAsync(
             string rootDir,
