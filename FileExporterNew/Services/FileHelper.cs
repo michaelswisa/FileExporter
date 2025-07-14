@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using FileExporterNew.Models;
+using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
@@ -9,10 +10,10 @@ namespace FileExporterNew.Services
         private const string FailedFileEnding = "fail";
         private readonly Settings _settings;
 
-        public FileHelper(ILogger<FileHelper> logger, Settings settings)
+        public FileHelper(ILogger<FileHelper> logger, IOptions<Settings> settings)
         {
             _logger = logger;
-            _settings = settings;
+            _settings = settings.Value;
         }
 
         public async Task<string[]> GetFilesInPath(string path)
@@ -24,12 +25,12 @@ namespace FileExporterNew.Services
             catch (DirectoryNotFoundException)
             {
                 _logger.LogError($"Path: {path} does not exist.");
-                return new string[0];
+                return Array.Empty<string>();
             }
             catch (Exception e)
             {
                 _logger.LogError($"An error occurred while reading path: {path}. {e.Message}");
-                return new string[0];
+                return Array.Empty<string>();
             }
         }
 
@@ -53,14 +54,20 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<FailursReason?> ReadFileAsync(string filePath)
+        public async Task<FailureReason?> ReadFileAsync(string filePath)
         {
             try
             {
-                using (var reader = new StreamReader(filePath))
+                var fileInfo = new FileInfo(filePath);
+                if (!fileInfo.Exists) return null;
+
+                var reasonText = await File.ReadAllTextAsync(filePath);
+                return new FailureReason
                 {
-                    return new FailursReason { Path = filePath, Reason = await reader.ReadToEndAsync() };
-                }
+                    Path = filePath,
+                    Reason = reasonText,
+                    LastWriteTime = fileInfo.LastWriteTime
+                };
             }
             catch (Exception e)
             {
@@ -69,21 +76,25 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<List<FailursReason>> GetFailedFilesAsync(string path)
+        public async Task<List<FailureReason>> GetFailedFilesAsync(string path)
         {
             if (!Directory.Exists(path))
             {
                 _logger.LogError($"Path: {path} does not exists");
-                return new List<FailursReason>();
+                return new List<FailureReason>();
             }
 
             string[] filesInPath = await GetFilesInPath(path);
-            string[] failedFiles = filesInPath.Where(x => x.EndsWith(FailedFileEnding, StringComparison.OrdinalIgnoreCase)).ToArray();
-            var failedFilesList = new ConcurrentBag<FailursReason>();
+            
+            // Filter for files where the filename CONTAINS the "fail" string.
+            string[] failedFiles = filesInPath
+                .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
 
-            await Parallel.ForEachAsync(failedFiles, async (file, cancellationToken) =>
+            var failedFilesList = new ConcurrentBag<FailureReason>();
+
+            await Parallel.ForEachAsync(failedFiles, async (filePath, cancellationToken) =>
             {
-                string filePath = Path.Combine(path, file);
                 var failedFile = await ReadFileAsync(filePath);
                 if (failedFile != null)
                 {
@@ -94,7 +105,7 @@ namespace FileExporterNew.Services
             return failedFilesList.ToList();
         }
 
-        public async Task<(int, List<FailursReason>)> NumberOfFaileds(string path)
+        public async Task<(int, List<FailureReason>)> NumberOfFaileds(string path)
         {
             if (!Directory.Exists(path))
             {

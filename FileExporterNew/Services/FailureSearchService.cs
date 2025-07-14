@@ -1,0 +1,338 @@
+using System.Text.Json;
+using Microsoft.Extensions.Options;
+using FileExporterNew.Models;
+
+namespace FileExporterNew.Services
+{
+    public class FailureSearchService : IDisposable
+    {
+        private readonly Settings _settings;
+        private readonly ILogger<FailureSearchService> _logger;
+        private readonly SemaphoreSlim _semaphore;
+        private readonly MetricsManager _metricsManager;
+        private readonly FileHelper _fileHelper;
+
+        public FailureSearchService(
+            IOptions<Settings> settings,
+            ILogger<FailureSearchService> logger,
+            MetricsManager metricsManager,
+            FileHelper fileHelper)
+        {
+            _settings = settings.Value;
+            _logger = logger;
+            _metricsManager = metricsManager;
+            _fileHelper = fileHelper;
+            _semaphore = new SemaphoreSlim(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
+        }
+
+        public async Task SearchFolderForFailuresAsync(
+            string rootDir,
+            string path,
+            string dName,
+            string env)
+        {
+            _logger.LogDebug("SearchFolderForFailures on path: {Path}", path);
+
+            try
+            {
+                var normalizedDName = char.ToUpper(dName[0]) + dName.Substring(1);
+
+                // Single pass through all directories
+                var allFailureReasons = new List<FailureReason>();
+                var directoryMetrics = new Dictionary<string, (int failureCount, DateTime lastModified)>();
+                
+                await ScanDirectoryTreeAsync(rootDir, path, env, normalizedDName, allFailureReasons, directoryMetrics);
+
+                // Filter recent failures in memory
+                var now = DateTime.Now;
+                var recentWindow = TimeSpan.FromMinutes(_settings.RecentErrorsTimeWindowMinutes);
+                var recentFailures = allFailureReasons
+                    .Where(fr => (now - fr.LastWriteTime) <= recentWindow)
+                    .ToList();
+
+                // Calculate and log metrics
+                await LogAllMetricsAsync(allFailureReasons, recentFailures, directoryMetrics, rootDir, path, normalizedDName, env);
+
+                // Save JSON files
+                await SaveFailureReasonsToJsonAsync(allFailureReasons, path, "reasons_all.json");
+                await SaveFailureReasonsToJsonAsync(recentFailures, path, "reasons_recent.json");
+
+                _logger.LogInformation(
+                    "Completed search for {DName}: {TotalFailures} total failures, {RecentFailures} recent failures",
+                    normalizedDName, allFailureReasons.Count, recentFailures.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in SearchFolderForFailures");
+                throw;
+            }
+        }
+
+        private async Task ScanDirectoryTreeAsync(
+            string rootDir,
+            string currentPath,
+            string env,
+            string dName,
+            List<FailureReason> allFailureReasons,
+            Dictionary<string, (int failureCount, DateTime lastModified)> directoryMetrics)
+        {
+            var directoriesToProcess = new Queue<(string path, int depth)>();
+            directoriesToProcess.Enqueue((currentPath, 0));
+
+            while (directoriesToProcess.Count > 0)
+            {
+                var (dirPath, depth) = directoriesToProcess.Dequeue();
+
+                try
+                {
+                    // Process current directory
+                    var (failures, reasons, lastModified) = await ProcessDirectoryAsync(dirPath);
+                    
+                    allFailureReasons.AddRange(reasons);
+
+                    // Store directory metrics
+                    var dirName = new DirectoryInfo(dirPath).Name;
+                    directoryMetrics[dirPath] = (failures, lastModified);
+
+                    // Determine if we should recurse further
+                    if (ShouldRecurseIntoSubdirs(dName, depth))
+                    {
+                        var subdirs = await _fileHelper.GetSubDirectories(dirPath);
+                        foreach (var subdir in subdirs)
+                        {
+                            var fullSubdirPath = Path.Combine(dirPath, subdir);
+                            directoriesToProcess.Enqueue((fullSubdirPath, depth + 1));
+                        }
+                    }
+
+                    // Break if we hit max failures
+                    if (allFailureReasons.Count >= _settings.MaxFailures)
+                    {
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing directory {DirPath}", dirPath);
+                }
+            }
+        }
+
+        private async Task<(int failures, List<FailureReason> reasons, DateTime lastModified)> ProcessDirectoryAsync(
+            string dirPath)
+        {
+            var lastModified = DateTime.MinValue;
+            var reasons = new List<FailureReason>();
+            int nFailures = 0;
+
+            try
+            {
+                (nFailures, reasons) = await _fileHelper.NumberOfFaileds(dirPath);
+                lastModified = GetLastModificationTime(dirPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing directory {DirPath}", dirPath);
+            }
+
+            return (nFailures, reasons, lastModified);
+        }
+
+        private DateTime GetLastModificationTime(string path)
+        {
+            try
+            {
+                var dirInfo = new DirectoryInfo(path);
+                return dirInfo.Exists ? dirInfo.LastWriteTime : DateTime.MinValue;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting modification time for {Path}", path);
+                return DateTime.MinValue;
+            }
+        }
+
+        private bool ShouldRecurseIntoSubdirs(string dName, int depth)
+        {
+            if (_settings.GroupedDNnames.Contains(dName.ToLower()))
+            {
+                return depth < _settings.MaxDepth;
+            }
+            else
+            {
+                return depth < 1;
+            }
+        }
+
+        private async Task LogAllMetricsAsync(
+            List<FailureReason> allFailures,
+            List<FailureReason> recentFailures,
+            Dictionary<string, (int failureCount, DateTime lastModified)> directoryMetrics,
+            string rootDir,
+            string path,
+            string dName,
+            string env)
+        {
+            // Only log group folder metrics for grouped DN names
+            if (_settings.GroupedDNnames.Contains(dName.ToLower()))
+            {
+                await LogGroupFolderMetrics(allFailures, rootDir, path, dName, env, false);
+                await LogGroupFolderMetrics(recentFailures, rootDir, path, dName, env, true);
+            }
+
+            // Log global metrics
+            LogGlobalMetrics(allFailures.Count, rootDir, dName, env, false);
+            LogGlobalMetrics(recentFailures.Count, rootDir, dName, env, true);
+        }
+
+        private async Task LogGroupFolderMetrics(
+            List<FailureReason> failureReasons,
+            string rootDir,
+            string path,
+            string dName,
+            string env,
+            bool isRecent)
+        {
+            var folderFailureCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. Get all "true" group folders (folders that contain other directories) and initialize their counts to 0.
+            var allGroupFolders = GetAllGroupFolders(path, dName);
+            foreach (var folder in allGroupFolders)
+            {
+                folderFailureCounts[folder] = 0;
+            }
+
+            // 2. Iterate through each failure and increment the count for its parent group folders.
+            foreach (var failure in failureReasons)
+            {
+                var currentDir = Directory.GetParent(failure.Path);
+                // Traverse up from the failure's directory.
+                while (currentDir != null && currentDir.FullName.Length >= path.Length && currentDir.FullName.StartsWith(path, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Only increment the count if the directory is a pre-identified group folder.
+                    if (folderFailureCounts.ContainsKey(currentDir.FullName))
+                    {
+                        folderFailureCounts[currentDir.FullName]++;
+                    }
+                    currentDir = currentDir.Parent;
+                }
+            }
+
+            // 3. Report the final count for each folder, skipping the top-level dName folder.
+            foreach (var kvp in folderFailureCounts)
+            {
+                var folderPath = kvp.Key;
+                var failureCount = kvp.Value;
+                var folderName = new DirectoryInfo(folderPath).Name;
+
+                // Skip reporting the metric for the root search path itself, as it's covered by total_nFailures.
+                if (folderPath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                _metricsManager.SetGaugeValue(
+                    "n_failures_in_group_folder",
+                    "failures in grouped subfolder",
+                    new[] { "root_dir", "d_name", "env", "group_folder", "is_recent" },
+                    new[] { rootDir, dName, env, folderName, isRecent ? "true" : "false" },
+                    failureCount);
+            }
+        }
+
+        private HashSet<string> GetAllGroupFolders(string searchPath, string dName)
+        {
+            var groupFolders = new HashSet<string>();
+            try
+            {
+                // Add the root search path itself if it's a group folder
+                if (Directory.GetDirectories(searchPath).Length > 0)
+                {
+                    groupFolders.Add(searchPath);
+                }
+
+                // Find all subdirectories that are also group folders
+                var directories = Directory.GetDirectories(searchPath, "*", SearchOption.AllDirectories);
+                foreach (var dir in directories)
+                {
+                    if (Directory.GetDirectories(dir).Length > 0)
+                    {
+                        groupFolders.Add(dir);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting group folders");
+            }
+
+            return groupFolders;
+        }
+
+        private void LogGlobalMetrics(int totalFailures, string rootDir, string dName, string env, bool isRecent)
+        {
+            var metricDescription = isRecent ? "recent failures (last 24h)" : "failures";
+
+            _metricsManager.SetGaugeValue(
+                "total_nFailures",
+                $"total {metricDescription} for d_name",
+                new[] { "root_dir", "d_name", "env", "is_recent" },
+                new[] { rootDir, dName, env, isRecent ? "true" : "false" },
+                totalFailures);
+        }
+
+        private async Task SaveFailureReasonsToJsonAsync(
+            List<FailureReason> failureReasons,
+            string outputPath,
+            string fileName)
+        {
+            try
+            {
+                var structuredReasons = new Dictionary<string, object>();
+
+                foreach (var fr in failureReasons)
+                {
+                    var imageFile = fr.Image;
+                    if (string.IsNullOrEmpty(imageFile))
+                    {
+                        imageFile = await FindFirstImageInDirAsync(fr.Path);
+                    }
+                    
+                    structuredReasons[fr.Path] = new
+                    {
+                        reason = fr.Reason,
+                        image = imageFile,
+                        lastWriteTime = fr.LastWriteTime.ToString("yyyy-MM-ddTHH:mm:ss")
+                    };
+                }
+
+                var jsonPath = Path.Combine(outputPath, fileName);
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+
+                var jsonString = JsonSerializer.Serialize(structuredReasons, jsonOptions);
+                await File.WriteAllTextAsync(jsonPath, jsonString);
+
+                _logger.LogInformation("Saved structured failure reasons to {JsonPath}", jsonPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error saving failure reasons to JSON");
+            }
+        }
+
+        private async Task<string> FindFirstImageInDirAsync(string path)
+        {
+            return "test/test";
+        }
+
+        public void Dispose()
+        {
+            _semaphore?.Dispose();
+        }
+    }
+}
