@@ -3,14 +3,17 @@ using Prometheus;
 
 namespace FileExporterNew.Services
 {
-    public class MetricsManager
+    public class MetricsManager : IDisposable
     {
         private readonly ILogger<MetricsManager> _logger;
         private static readonly ConcurrentDictionary<string, Gauge> _gauges = new();
+        private readonly Timer _cleanupTimer;
 
         public MetricsManager(ILogger<MetricsManager> logger)
         {
             _logger = logger;
+            // Cleanup old metrics every 30 minutes
+            _cleanupTimer = new Timer(CleanupOldMetrics, null, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
         }
 
         public void SetGaugeValue(string name, string description, string[] labelName, string[] labelValue, double value)
@@ -47,5 +50,23 @@ namespace FileExporterNew.Services
             }
         }
 
+        private void CleanupOldMetrics(object? state)
+        {
+            try
+            {
+                _logger.LogDebug("Running metrics cleanup");
+                // This is a placeholder for future cleanup logic if needed
+                // Currently, Prometheus handles most cleanup automatically
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during metrics cleanup");
+            }
+        }
+
+        public void Dispose()
+        {
+            _cleanupTimer?.Dispose();
+        }
     }
 }

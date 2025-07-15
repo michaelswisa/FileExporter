@@ -13,7 +13,7 @@ namespace FileExporterNew.Services
         private readonly SemaphoreSlim _semaphore;
         private readonly MetricsManager _metricsManager;
         private readonly FileHelper _fileHelper;
-        private static readonly ConcurrentDictionary<string, HashSet<string>> _activeGroupFolderSeries = new();
+        private static readonly ConcurrentDictionary<string, (HashSet<string> keys, DateTime lastUsed)> _activeGroupFolderSeries = new();
 
         public FailureSearchService(
             IOptions<Settings> settings,
@@ -281,15 +281,40 @@ namespace FileExporterNew.Services
 
             // Remove stale series for this dName + isRecent combination
             var dNameAndRecentKey = $"{dName}_{isRecent}"; // Unique key for this specific d_name and is_recent combination
-            if (_activeGroupFolderSeries.TryGetValue(dNameAndRecentKey, out var previousKeys))
+            
+            _logger.LogInformation($"Processing cleanup for {dNameAndRecentKey}. Current folders: {currentKeys.Count}");
+            
+            if (_activeGroupFolderSeries.TryGetValue(dNameAndRecentKey, out var previousData))
             {
-                foreach (var stale in previousKeys.Except(currentKeys))
+                _logger.LogInformation($"Previous folders: {previousData.keys.Count}");
+                var staleKeys = previousData.keys.Except(currentKeys).ToList();
+                _logger.LogInformation($"Stale folders to remove: {staleKeys.Count}");
+                
+                foreach (var stale in staleKeys)
                 {
                     var labelValues = SplitKey(stale);
+                    var folderName = labelValues[3]; // group_folder is at index 3
+                    
+                    // First set to 0, then remove - this ensures Prometheus clears the metric
+                    _metricsManager.SetGaugeValue(metricName, "failures in grouped subfolder", 
+                        new[] { "root_dir", "d_name", "env", "group_folder", "is_recent" }, 
+                        labelValues, 0);
+                    
+                    // Then remove the series
                     _metricsManager.RemoveGaugeSeries(metricName, labelValues);
+                    _logger.LogWarning($"REMOVED stale metric for folder: {folderName} - Key: {stale}");
                 }
             }
-            _activeGroupFolderSeries[dNameAndRecentKey] = currentKeys;
+            else
+            {
+                _logger.LogInformation($"No previous keys found for {dNameAndRecentKey}");
+            }
+            
+            // Update with current keys and timestamp
+            _activeGroupFolderSeries[dNameAndRecentKey] = (currentKeys, DateTime.Now);
+            
+            // Clean up old entries (older than 24 hours)
+            CleanupOldEntries();
         }
 
         private HashSet<string> GetAllGroupFolders(string searchPath, string dName)
@@ -298,16 +323,18 @@ namespace FileExporterNew.Services
             try
             {
                 // Add the root search path itself if it's a group folder
-                if (Directory.GetDirectories(searchPath).Length > 0)
+                if (Directory.EnumerateDirectories(searchPath).Any())
                 {
                     groupFolders.Add(searchPath);
                 }
 
-                // Find all subdirectories that are also group folders
-                var directories = Directory.GetDirectories(searchPath, "*", SearchOption.AllDirectories);
+                // Use streaming approach to avoid loading all directories into memory
+                var directories = Directory.EnumerateDirectories(searchPath, "*", SearchOption.AllDirectories)
+                    .Take(_settings.MaxFailures); // Limit to prevent memory issues
+                
                 foreach (var dir in directories)
                 {
-                    if (Directory.GetDirectories(dir).Length > 0)
+                    if (Directory.EnumerateDirectories(dir).Any())
                     {
                         groupFolders.Add(dir);
                     }
@@ -389,9 +416,32 @@ namespace FileExporterNew.Services
         private static string[] SplitKey(string key) =>
             key.Split('\u0001');
 
+        private void CleanupOldEntries()
+        {
+            var cutoffTime = DateTime.Now.AddHours(-24);
+            var keysToRemove = new List<string>();
+
+            foreach (var kvp in _activeGroupFolderSeries)
+            {
+                if (kvp.Value.lastUsed < cutoffTime)
+                {
+                    keysToRemove.Add(kvp.Key);
+                }
+            }
+
+            foreach (var key in keysToRemove)
+            {
+                if (_activeGroupFolderSeries.TryRemove(key, out _))
+                {
+                    _logger.LogInformation($"Cleaned up old entry: {key}");
+                }
+            }
+        }
+
         public void Dispose()
         {
             _semaphore?.Dispose();
+            // Don't clear _activeGroupFolderSeries - we need it to track stale metrics between requests
         }
     }
 }

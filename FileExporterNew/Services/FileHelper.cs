@@ -20,7 +20,10 @@ namespace FileExporterNew.Services
         {
             try
             {
-                return await Task.Run(() => Directory.GetFileSystemEntries(path));
+                return await Task.Run(() => 
+                    Directory.EnumerateFileSystemEntries(path)
+                        .Take(_settings.MaxFilesToRead)
+                        .ToArray());
             }
             catch (DirectoryNotFoundException)
             {
@@ -61,6 +64,13 @@ namespace FileExporterNew.Services
                 var fileInfo = new FileInfo(filePath);
                 if (!fileInfo.Exists) return null;
 
+                // Limit file size to prevent memory issues
+                if (fileInfo.Length > 1024 * 1024) // 1MB limit
+                {
+                    _logger.LogWarning($"File {filePath} is too large ({fileInfo.Length} bytes), skipping");
+                    return null;
+                }
+
                 var reasonText = await File.ReadAllTextAsync(filePath);
                 return new FailureReason
                 {
@@ -84,25 +94,38 @@ namespace FileExporterNew.Services
                 return new List<FailureReason>();
             }
 
-            string[] filesInPath = await GetFilesInPath(path);
-            
-            // Filter for files where the filename CONTAINS the "fail" string.
-            string[] failedFiles = filesInPath
+            // Use streaming approach to avoid loading all files into memory
+            var failedFiles = Directory.EnumerateFileSystemEntries(path)
                 .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+                .Take(_settings.MaxFilesToRead);
 
-            var failedFilesList = new ConcurrentBag<FailureReason>();
+            var failedFilesList = new List<FailureReason>();
+            var semaphore = new SemaphoreSlim(Environment.ProcessorCount, Environment.ProcessorCount);
 
-            await Parallel.ForEachAsync(failedFiles, async (filePath, cancellationToken) =>
+            var tasks = failedFiles.Select(async filePath =>
             {
-                var failedFile = await ReadFileAsync(filePath);
-                if (failedFile != null)
+                await semaphore.WaitAsync();
+                try
                 {
-                    failedFilesList.Add(failedFile);
+                    var failedFile = await ReadFileAsync(filePath);
+                    if (failedFile != null)
+                    {
+                        lock (failedFilesList)
+                        {
+                            failedFilesList.Add(failedFile);
+                        }
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
                 }
             });
 
-            return failedFilesList.ToList();
+            await Task.WhenAll(tasks);
+            semaphore.Dispose();
+
+            return failedFilesList;
         }
 
         public async Task<(int, List<FailureReason>)> NumberOfFaileds(string path)
