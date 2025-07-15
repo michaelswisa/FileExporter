@@ -1,5 +1,4 @@
-﻿using System.Collections.Concurrent;
-using FileExporterNew.Models;
+﻿using FileExporterNew.Models;
 using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
@@ -9,6 +8,8 @@ namespace FileExporterNew.Services
         private readonly ILogger<FileHelper> _logger;
         private const string FailedFileEnding = "fail";
         private readonly Settings _settings;
+        private static readonly HashSet<string> SupportedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp" };
+
 
         public FileHelper(ILogger<FileHelper> logger, IOptions<Settings> settings)
         {
@@ -20,7 +21,7 @@ namespace FileExporterNew.Services
         {
             try
             {
-                return await Task.Run(() => 
+                return await Task.Run(() =>
                     Directory.EnumerateFileSystemEntries(path)
                         .Take(_settings.MaxFilesToRead)
                         .ToArray());
@@ -74,7 +75,7 @@ namespace FileExporterNew.Services
                 var reasonText = await File.ReadAllTextAsync(filePath);
                 return new FailureReason
                 {
-                    Path = filePath,
+                    Path = Path.GetDirectoryName(filePath) ?? string.Empty,
                     Reason = reasonText,
                     LastWriteTime = fileInfo.LastWriteTime
                 };
@@ -139,5 +140,24 @@ namespace FileExporterNew.Services
             return (failedFiles.Count, failedFiles);
         }
 
+        public string? FindImageInDirectory(string directoryPath)
+        {
+            if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var imageFile = Directory.EnumerateFiles(directoryPath).FirstOrDefault(file => SupportedImageExtensions.Contains(Path.GetExtension(file)));
+
+                return imageFile;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error searching for image in directory: {directoryPath}");
+                return null;
+            }
+        }
     }
 }
