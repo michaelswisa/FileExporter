@@ -7,6 +7,7 @@ namespace FileExporterNew.Services
     {
         private readonly ILogger<FileHelper> _logger;
         private const string FailedFileEnding = "fail";
+        private const string ObservedFileEnding = "observed";
         private readonly Settings _settings;
         private static readonly HashSet<string> SupportedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp" };
 
@@ -172,6 +173,49 @@ namespace FileExporterNew.Services
                 _logger.LogError($"Error searching for image in directory: {directoryPath}. Error: {ex.Message}");
                 return null;
             }
+        }
+
+        public async Task<string> GetFileNameByEnding(string path, string ending)
+        {
+            if (!Directory.Exists(path))
+            {
+                _logger.LogError($"Path: {path} does not exist.");
+                return string.Empty;
+            }
+
+            string[] filesInPath = await GetFilesInPath(path);
+            var file = filesInPath.FirstOrDefault(file => file.EndsWith(ending, StringComparison.OrdinalIgnoreCase));
+            return file != null ? Path.GetFileName(file) : string.Empty;
+        }
+
+        public async Task<bool> IsInObservedNotFailed(string path)
+        {
+            if (!Directory.Exists(path))
+            {
+                _logger.LogError($"Path: {path} does not exist.");
+                return false;
+            }
+
+            var filesInPath = (await GetFilesInPath(path)).ToList();
+            return (
+                !filesInPath.Any(x => x.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                filesInPath.Count(x => x.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1
+            );
+        }
+
+        public async Task<bool> NotObservedAndNotFailed(string path)
+        {
+            if (!Directory.Exists(path))
+            {
+                _logger.LogError($"Path: {path} does not exist.");
+                return false;
+            }
+
+            var filesInPath = (await GetFilesInPath(path)).ToList();
+            return (
+                !filesInPath.Any(x => x.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                !filesInPath.Any(x => x.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase))
+            );
         }
     }
 }
