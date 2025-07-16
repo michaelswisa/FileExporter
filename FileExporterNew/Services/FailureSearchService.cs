@@ -22,13 +22,13 @@ namespace FileExporterNew.Services
             _metricsManager = metricsManager;
             _fileHelper = fileHelper;
 
-            // Initialize the cleanup timer with settings from appsettings.json
             var cleanupInterval = TimeSpan.FromHours(_settings.CleanupTimerIntervalHours);
             _cleanupTimer = new Timer(state => CleanupOldEntries(state, _logger), _settings, (int)cleanupInterval.TotalMilliseconds, (int)cleanupInterval.TotalMilliseconds);
         }
 
         public async Task SearchFolderForFailuresAsync(string rootDir, string path, string dName, string env)
         {
+            _logger.LogInformation($"Starting scan for failures in root directory: {rootDir}, path: {path}, dName: {dName}, env: {env}");
             var stopwatch = Stopwatch.StartNew();
             var normalizedDName = char.ToUpper(dName[0]) + dName[1..];
 
@@ -56,6 +56,7 @@ namespace FileExporterNew.Services
 
         private async Task<List<FailureReason>> ScanDirectoryTreeAsync(string rootPath, string dName)
         {
+            _logger.LogInformation($"Starting ScanDirectoryTreeAsync for root path: {rootPath}, dName: {dName}");
             var allFailures = new List<FailureReason>();
             var queue = new Queue<(string path, int depth)>();
             queue.Enqueue((rootPath, 0));
@@ -83,24 +84,26 @@ namespace FileExporterNew.Services
                     _logger.LogError(ex, $"Error processing {currentPath}");
                 }
             }
-
+            _logger.LogInformation($"ScanDirectoryTreeAsync finished. Total failures found: {allFailures.Count}");
             return allFailures;
         }
 
         private List<FailureReason> GetRecentFailures(List<FailureReason> allFailures)
         {
+            _logger.LogInformation($"Calculating recent failures from {allFailures.Count} total failures.");
             var cutoff = DateTime.Now.AddHours(-_settings.RecentErrorsTimeWindowHours);
-            return allFailures.Where(f => f.LastWriteTime >= cutoff).ToList();
+            var recent = allFailures.Where(f => f.LastWriteTime >= cutoff).ToList();
+            _logger.LogInformation($"Found {recent.Count} recent failures.");
+            return recent;
         }
 
         private async Task RecordMetricsAsync(List<FailureReason> allFailures, List<FailureReason> recentFailures,
             string rootDir, string path, string dName, string env)
         {
-            // Record global metrics
+            _logger.LogInformation($"Recording metrics for rootDir: {rootDir}, dName: {dName}, env: {env}");
             RecordGlobalMetrics(allFailures.Count, rootDir, dName, env, false);
             RecordGlobalMetrics(recentFailures.Count, rootDir, dName, env, true);
 
-            // Record group folder metrics if applicable
             bool isGroupedName = _settings.GroupedDNnames.Any(name => name.Equals(dName, StringComparison.OrdinalIgnoreCase));
 
             if (isGroupedName)
@@ -108,11 +111,11 @@ namespace FileExporterNew.Services
                 await RecordGroupFolderMetrics(allFailures, rootDir, path, dName, env, false);
                 await RecordGroupFolderMetrics(recentFailures, rootDir, path, dName, env, true);
             }
-
         }
 
         private async Task RecordGroupFolderMetrics(List<FailureReason> failures, string rootDir, string path, string dName, string env, bool isRecent)
         {
+            _logger.LogInformation($"Recording group folder metrics for {dName}, isRecent: {isRecent}. Failures count: {failures.Count}");
             var folderCounts = await GetFolderFailureCounts(failures, path);
             var currentKeys = new HashSet<string>();
             var metricKey = $"{dName}_{isRecent}";
@@ -135,6 +138,7 @@ namespace FileExporterNew.Services
 
         private async Task<Dictionary<string, int>> GetFolderFailureCounts(List<FailureReason> failures, string rootPath)
         {
+            _logger.LogInformation($"Getting folder failure counts for {failures.Count} failures in root path: {rootPath}");
             var groupFolders = await GetGroupFolders(rootPath);
             var folderCounts = groupFolders.ToDictionary(f => f, _ => 0, StringComparer.OrdinalIgnoreCase);
 
@@ -150,17 +154,17 @@ namespace FileExporterNew.Services
                     currentDir = currentDir.Parent;
                 }
             }
-
+            _logger.LogInformation($"Finished calculating folder failure counts. Found {folderCounts.Count} folders with failures.");
             return folderCounts;
         }
 
         private async Task<HashSet<string>> GetGroupFolders(string rootPath)
         {
+            _logger.LogInformation($"Getting group folders from root path: {rootPath}");
             var groupFolders = new HashSet<string>();
 
             try
             {
-                // Use ConfigureAwait(false) to avoid capturing sync context
                 await Task.Run(() =>
                 {
                     using var enumerator = Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
@@ -181,12 +185,13 @@ namespace FileExporterNew.Services
             {
                 _logger.LogError(ex, $"Error getting group folders from {rootPath}");
             }
-
+            _logger.LogInformation($"Found {groupFolders.Count} group folders.");
             return groupFolders;
         }
 
         private void CleanupStaleMetrics(string metricKey, HashSet<string> currentKeys)
         {
+            _logger.LogInformation($"Starting CleanupStaleMetrics for metricKey: {metricKey}");
             if (_activeMetricKeys.TryGetValue(metricKey, out var entry))
             {
                 var previousKeys = entry.Keys;
@@ -210,7 +215,6 @@ namespace FileExporterNew.Services
             try
             {
                 var currentSettings = (Settings)state!;
-                // Clean up metric keys older than CleanupTimerIntervalHours based on d_name pattern
                 var keysToRemove = _activeMetricKeys
                     .Where(entry => entry.Key.Contains("_") &&
                                  (DateTime.UtcNow - entry.Value.LastUpdated).TotalHours > currentSettings.CleanupTimerIntervalHours)
@@ -226,6 +230,10 @@ namespace FileExporterNew.Services
                 {
                     logger.LogInformation($"Successfully removed {keysToRemove.Count} old metric keys from _activeMetricKeys.");
                 }
+                else
+                {
+                    logger.LogInformation("No old metric keys to remove from _activeMetricKeys.");
+                }
             }
             catch (Exception ex)
             {
@@ -235,6 +243,7 @@ namespace FileExporterNew.Services
 
         private void RecordGlobalMetrics(int count, string rootDir, string dName, string env, bool isRecent)
         {
+            _logger.LogInformation($"Recording global metrics for count: {count}, rootDir: {rootDir}, dName: {dName}, env: {env}, isRecent: {isRecent}");
             var description = "Total failures for d_name. The 'is_recent' label indicates if the count is for recent failures (true) or all failures (false).";
 
             _metricsManager.SetGaugeValue("total_nFailures", description,
@@ -244,18 +253,21 @@ namespace FileExporterNew.Services
 
         private void RecordScanDuration(string rootDir, string dName, string env, long milliseconds)
         {
+            _logger.LogInformation($"Recording scan duration for rootDir: {rootDir}, dName: {dName}, env: {env}, duration: {milliseconds}ms");
             _metricsManager.SetGaugeValue("dname_scan_duration_ms", "Duration of d_name scan in milliseconds",
                 new[] { "root_dir", "d_name", "env" }, new[] { rootDir, dName, env }, milliseconds);
         }
 
         private async Task SaveFailureReportsAsync(List<FailureReason> allFailures, List<FailureReason> recentFailures, string path)
         {
+            _logger.LogInformation($"Saving failure reports to path: {path}. All failures: {allFailures.Count}, Recent failures: {recentFailures.Count}");
             await SaveFailureReasonsToJsonAsync(allFailures, path, "reasons_all.json");
             await SaveFailureReasonsToJsonAsync(recentFailures, path, "reasons_recent.json");
         }
 
         private async Task SaveFailureReasonsToJsonAsync(List<FailureReason> failures, string outputPath, string fileName)
         {
+            _logger.LogInformation($"Saving {fileName} to {outputPath}. Number of failures: {failures.Count}");
             try
             {
                 var data = failures.ToDictionary(f => f.Path, f => new
@@ -273,6 +285,7 @@ namespace FileExporterNew.Services
                 });
 
                 await File.WriteAllTextAsync(Path.Combine(outputPath, fileName), json);
+                _logger.LogInformation($"Successfully saved {fileName}.");
             }
             catch (Exception ex)
             {
@@ -286,6 +299,7 @@ namespace FileExporterNew.Services
                 .Any(name => name.Equals(dName, StringComparison.OrdinalIgnoreCase))
                 ? _settings.MaxDepth
                 : 1;
+            _logger.LogInformation($"ShouldRecurse check for dName: {dName}, depth: {depth}. MaxDepth: {maxDepth}. Result: {depth < maxDepth}");
             return depth < maxDepth;
         }
     }

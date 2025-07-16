@@ -10,7 +10,6 @@ namespace FileExporterNew.Services
         private readonly Settings _settings;
         private static readonly HashSet<string> SupportedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp" };
 
-
         public FileHelper(ILogger<FileHelper> logger, IOptions<Settings> settings)
         {
             _logger = logger;
@@ -19,12 +18,15 @@ namespace FileExporterNew.Services
 
         public async Task<string[]> GetFilesInPath(string path)
         {
+            _logger.LogInformation("Attempting to get files in path: {Path}", path);
             try
             {
-                return await Task.Run(() =>
+                var files = await Task.Run(() =>
                     Directory.EnumerateFileSystemEntries(path)
                         .Take(_settings.MaxFilesToRead)
                         .ToArray());
+                _logger.LogInformation($"Found {files.Length} files in path: {path}");
+                return files;
             }
             catch (DirectoryNotFoundException)
             {
@@ -40,6 +42,7 @@ namespace FileExporterNew.Services
 
         public async Task<string[]> GetSubDirectories(string path)
         {
+            _logger.LogInformation($"Attempting to get subdirectories in path: {path}");
             try
             {
                 if (!Directory.Exists(path))
@@ -49,7 +52,9 @@ namespace FileExporterNew.Services
                 }
 
                 var directories = await Task.Run(() => Directory.EnumerateDirectories(path).Take(_settings.MaxFilesToRead));
-                return directories.Select(d => Path.GetFileName(d)).ToArray();
+                var result = directories.Select(d => Path.GetFileName(d)).ToArray();
+                _logger.LogInformation($"Found {result.Length} subdirectories in path: {path}");
+                return result;
             }
             catch (Exception e)
             {
@@ -60,12 +65,16 @@ namespace FileExporterNew.Services
 
         public async Task<FailureReason?> ReadFileAsync(string filePath)
         {
+            _logger.LogInformation($"Attempting to read file: {filePath}");
             try
             {
                 var fileInfo = new FileInfo(filePath);
-                if (!fileInfo.Exists) return null;
+                if (!fileInfo.Exists)
+                {
+                    _logger.LogWarning($"File does not exist: {filePath}");
+                    return null;
+                }
 
-                // Limit file size to prevent memory issues
                 if (fileInfo.Length > 1024 * 1024) // 1MB limit
                 {
                     _logger.LogWarning($"File {filePath} is too large ({fileInfo.Length} bytes), skipping");
@@ -73,6 +82,7 @@ namespace FileExporterNew.Services
                 }
 
                 var reasonText = await File.ReadAllTextAsync(filePath);
+                _logger.LogInformation($"Successfully read file: {filePath}");
                 return new FailureReason
                 {
                     Path = Path.GetDirectoryName(filePath) ?? string.Empty,
@@ -89,13 +99,13 @@ namespace FileExporterNew.Services
 
         public async Task<List<FailureReason>> GetFailedFilesAsync(string path)
         {
+            _logger.LogInformation($"Attempting to get failed files in path: {path}");
             if (!Directory.Exists(path))
             {
                 _logger.LogError($"Path: {path} does not exists");
                 return new List<FailureReason>();
             }
 
-            // Use streaming approach to avoid loading all files into memory
             var failedFiles = Directory.EnumerateFileSystemEntries(path)
                 .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase))
                 .Take(_settings.MaxFilesToRead);
@@ -125,25 +135,29 @@ namespace FileExporterNew.Services
 
             await Task.WhenAll(tasks);
             semaphore.Dispose();
-
+            _logger.LogInformation($"Found {failedFilesList.Count} failed files in path: {path}");
             return failedFilesList;
         }
 
         public async Task<(int, List<FailureReason>)> NumberOfFaileds(string path)
         {
+            _logger.LogInformation($"Calculating number of failed files for path: {path}");
             if (!Directory.Exists(path))
             {
-                _logger.LogError($"Path: {path} does not exist");
+                _logger.LogError($"Path: {path} does not exist for NumberOfFaileds.");
             }
 
             var failedFiles = await GetFailedFilesAsync(path);
+            _logger.LogInformation($"Returning {failedFiles.Count} failed files for path: {path}");
             return (failedFiles.Count, failedFiles);
         }
 
         public string? FindImageInDirectory(string directoryPath)
         {
+            _logger.LogInformation($"Attempting to find image in directory: {directoryPath}");
             if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath))
             {
+                _logger.LogWarning($"Invalid or non-existent directory path provided: {directoryPath}");
                 return null;
             }
 
@@ -155,7 +169,7 @@ namespace FileExporterNew.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error searching for image in directory: {directoryPath}");
+                _logger.LogError($"Error searching for image in directory: {directoryPath}. Error: {ex.Message}");
                 return null;
             }
         }
