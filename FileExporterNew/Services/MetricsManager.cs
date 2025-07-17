@@ -15,9 +15,16 @@ namespace FileExporterNew.Services
 
         public void SetGaugeValue(string name, string description, string[] labelNames, string[] labelValues, double value)
         {
-            _logger.LogInformation($"Setting gauge value for metric: {name}, value: {value}, labels: {string.Join(", ", labelValues)}");
             try
             {
+                if (labelNames.Length != labelValues.Length)
+                {
+                    _logger.LogError($"Label names count ({labelNames.Length}) does not match label values count ({labelValues.Length}) for metric: {name}");
+                    return;
+                }
+
+                _logger.LogInformation($"Setting gauge value for metric: {name}, value: {value}, labels: {string.Join(", ", labelValues)}");
+
                 var gauge = _gauges.GetOrAdd(name, _ =>
                     Metrics.CreateGauge(name, description, new GaugeConfiguration
                     {
@@ -30,10 +37,11 @@ namespace FileExporterNew.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Error updating metric: {name}. Error: {ex.Message}");
+                _logger.LogError(ex, $"Error updating metric: {name}. Error: {ex.Message}");
                 throw;
             }
         }
+
 
         public void RemoveGaugeSeries(string name, string[] labelValues)
         {

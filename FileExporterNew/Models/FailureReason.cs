@@ -2,9 +2,9 @@ namespace FileExporterNew.Models
 {
     public class FailureReason
     {
-        public string Path { get; set; }
-        public string Reason { get; set; }
-        public string Image { get; set; }
+        public string Path { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+        public string Image { get; set; } = string.Empty;
         public DateTime LastWriteTime { get; set; }
     }
-} 
+}

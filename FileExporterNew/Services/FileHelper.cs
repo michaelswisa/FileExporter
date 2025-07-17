@@ -75,8 +75,7 @@ namespace FileExporterNew.Services
                     _logger.LogWarning($"File does not exist: {filePath}");
                     return null;
                 }
-
-                if (fileInfo.Length > 1024 * 1024) // 1MB limit
+                if (fileInfo.Length > 1024 * 1024)
                 {
                     _logger.LogWarning($"File {filePath} is too large ({fileInfo.Length} bytes), skipping");
                     return null;
@@ -187,35 +186,38 @@ namespace FileExporterNew.Services
             var file = filesInPath.FirstOrDefault(file => file.EndsWith(ending, StringComparison.OrdinalIgnoreCase));
             return file != null ? Path.GetFileName(file) : string.Empty;
         }
-
         public async Task<bool> IsInObservedNotFailed(string path)
         {
             if (!Directory.Exists(path))
             {
-                _logger.LogError($"Path: {path} does not exist.");
+                _logger.LogWarning($"Path for IsInObservedNotFailed check does not exist: {path}");
                 return false;
             }
+            var fileNames = await Task.Run(() =>
+                Directory.EnumerateFiles(path)
+                         .Select(f => Path.GetFileName(f))
+                         .Take(_settings.MaxFilesToRead)
+                         .ToList());
 
-            var filesInPath = (await GetFilesInPath(path)).ToList();
-            return (
-                !filesInPath.Any(x => x.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                filesInPath.Count(x => x.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1
-            );
+            return !fileNames.Any(name => name.EndsWith(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                    fileNames.Count(name => name.EndsWith(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1;
         }
 
         public async Task<bool> NotObservedAndNotFailed(string path)
         {
             if (!Directory.Exists(path))
             {
-                _logger.LogError($"Path: {path} does not exist.");
+                _logger.LogWarning($"Path for NotObservedAndNotFailed check does not exist: {path}");
                 return false;
             }
-
-            var filesInPath = (await GetFilesInPath(path)).ToList();
-            return (
-                !filesInPath.Any(x => x.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                !filesInPath.Any(x => x.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase))
-            );
+            var fileNames = await Task.Run(() =>
+                Directory.EnumerateFiles(path)
+                         .Select(f => Path.GetFileName(f))
+                         .Take(_settings.MaxFilesToRead)
+                         .ToList());
+                         
+            return !fileNames.Any(name => name.EndsWith(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                   !fileNames.Any(name => name.EndsWith(ObservedFileEnding, StringComparison.OrdinalIgnoreCase));
         }
     }
 }

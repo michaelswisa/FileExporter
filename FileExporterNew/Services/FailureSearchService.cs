@@ -239,6 +239,7 @@ namespace FileExporterNew.Services
             {
                 logger.LogError(ex, "Error occurred during CleanupOldEntries.");
             }
+
         }
 
         private void RecordGlobalMetrics(int count, string rootDir, string dName, string env, bool isRecent)
@@ -304,3 +305,4 @@ namespace FileExporterNew.Services
         }
     }
 }
+
