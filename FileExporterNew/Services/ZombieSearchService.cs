@@ -220,24 +220,46 @@ namespace FileExporterNew.Services
         private async Task RecordGroupFolderZombieMetrics(List<ZombieFolder> zombies, string rootDir, string path, string dName, string env, bool isRecent, string zombieType)
         {
             _logger.LogInformation($"Recording group folder zombie metrics for {dName}, isRecent: {isRecent}, zombieType: {zombieType}. Zombies count: {zombies.Count}");
-            var subdirectories = await _fileHelper.GetSubDirectories(path);
             var currentKeys = new HashSet<string>();
             var metricKey = $"{dName}_{zombieType}_{isRecent}";
 
-            foreach (var subdir in subdirectories)
+            // Collect all unique non-leaf parent folders that contain zombies
+            var potentialGroupFolders = new HashSet<string>();
+            foreach (var zombie in zombies)
             {
-                var fullPath = Path.Combine(path, subdir);
-                var count = zombies.Count(z => z.Path.StartsWith(fullPath, StringComparison.OrdinalIgnoreCase));
-
-                if (count > 0)
+                var currentDir = Path.GetDirectoryName(zombie.Path);
+                while (currentDir != null && !currentDir.Equals(path, StringComparison.OrdinalIgnoreCase))
                 {
-                    var labels = new[] { rootDir, dName, env, subdir, isRecent.ToString().ToLower(), zombieType };
-                    var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentZombiesTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
+                    potentialGroupFolders.Add(currentDir);
+                    currentDir = Path.GetDirectoryName(currentDir);
+                }
+            }
 
-                    _metricsManager.SetGaugeValue("n_zombies_in_group_folder", description,
-                        new[] { "root_dir", "d_name", "env", "group_folder", "is_recent", "zombie_type" }, labels, count);
 
-                    currentKeys.Add(string.Join('\u0001', labels));
+
+            foreach (var groupFolderPath in potentialGroupFolders)
+            {
+                // Check if this folder is a non-leaf folder (i.e., has subdirectories)
+                var subdirs = await _fileHelper.GetSubDirectories(groupFolderPath);
+                if (subdirs.Length > 0) // Only process non-leaf folders
+                {
+                    // Calculate the relative path from the initial 'path' (e.g., "mosh")
+                    var relativePathFromRoot = Path.GetRelativePath(path, groupFolderPath);
+                    var groupFolderLabel = Path.Combine(dName, relativePathFromRoot).Replace("\\", "/"); // Ensure forward slashes
+
+                    // Count zombies within this group folder (including its subfolders)
+                    var count = zombies.Count(z => z.Path.StartsWith(groupFolderPath, StringComparison.OrdinalIgnoreCase));
+
+                    if (count > 0)
+                    {
+                        var labels = new[] { rootDir, dName, env, groupFolderLabel, isRecent.ToString().ToLower(), zombieType };
+                        var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentZombiesTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
+
+                        _metricsManager.SetGaugeValue("n_zombies_in_group_folder", description,
+                            new[] { "root_dir", "d_name", "env", "group_folder", "is_recent", "zombie_type" }, labels, count);
+
+                        currentKeys.Add(string.Join('\u0001', labels));
+                    }
                 }
             }
 
