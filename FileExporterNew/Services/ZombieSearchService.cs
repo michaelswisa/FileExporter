@@ -80,7 +80,7 @@ namespace FileExporterNew.Services
             var queue = new Queue<(string path, int depth)>();
             queue.Enqueue((rootPath, 0));
 
-            while (queue.Count > 0 && allZombies.Count < _settings.MaxZombies)
+            while (queue.Count > 0 && allZombies.Count < _settings.MaxFailures)
             {
                 var (currentPath, depth) = queue.Dequeue();
 
@@ -95,7 +95,7 @@ namespace FileExporterNew.Services
                             var fileInfo = new FileInfo(observedFilePath);
                             var timeSinceCreation = (DateTime.Now - fileInfo.LastWriteTime).TotalMinutes;
 
-            if (timeSinceCreation > _settings.ObservedZombieThresholdMinutes)
+            if (timeSinceCreation > _settings.ZombieTimeThresholdMinutes)
                             {
                                 allZombies.Add(new ZombieFolder
                                 {
@@ -132,7 +132,7 @@ namespace FileExporterNew.Services
             var queue = new Queue<(string path, int depth)>();
             queue.Enqueue((rootPath, 0));
 
-            while (queue.Count > 0 && allZombies.Count < _settings.MaxZombies)
+            while (queue.Count > 0 && allZombies.Count < _settings.MaxFailures)
             {
                 var (currentPath, depth) = queue.Dequeue();
 
@@ -146,7 +146,7 @@ namespace FileExporterNew.Services
                             var dirInfo = new DirectoryInfo(currentPath);
                             var timeSinceCreation = (DateTime.Now - dirInfo.LastWriteTime).TotalMinutes;
 
-            if (timeSinceCreation > _settings.NonObservedZombieThresholdMinutes)
+            if (timeSinceCreation > _settings.ZombieTimeThresholdMinutes)
                             {
                                 allZombies.Add(new ZombieFolder
                                 {
@@ -179,7 +179,7 @@ namespace FileExporterNew.Services
         private List<ZombieFolder> GetRecentZombies(List<ZombieFolder> allZombies)
         {
             _logger.LogInformation($"Calculating recent zombies from {allZombies.Count} total zombies.");
-            var cutoff = DateTime.Now.AddHours(-_settings.RecentZombiesTimeWindowHours);
+            var cutoff = DateTime.Now.AddHours(-_settings.RecentTimeWindowHours);
             var recent = allZombies.Where(z => z.LastWriteTime >= cutoff).ToList();
             _logger.LogInformation($"Found {recent.Count} recent zombies.");
             return recent;
@@ -244,22 +244,22 @@ namespace FileExporterNew.Services
                 if (subdirs.Length > 0) // Only process non-leaf folders
                 {
                     // Calculate the relative path from the initial 'path' (e.g., "mosh")
-                    var relativePathFromRoot = Path.GetRelativePath(path, groupFolderPath);
-                    var groupFolderLabel = Path.Combine(dName, relativePathFromRoot).Replace("\\", "/"); // Ensure forward slashes
+                        // Calculate the relative path from the RootPath
+                        var fullPathFromRoot = Path.GetRelativePath(rootDir, groupFolderPath).Replace("\\", "/");
 
-                    // Count zombies within this group folder (including its subfolders)
-                    var count = zombies.Count(z => z.Path.StartsWith(groupFolderPath, StringComparison.OrdinalIgnoreCase));
+                        // Count zombies within this group folder (including its subfolders)
+                        var count = zombies.Count(z => z.Path.StartsWith(groupFolderPath, StringComparison.OrdinalIgnoreCase));
 
-                    if (count > 0)
-                    {
-                        var labels = new[] { rootDir, dName, env, groupFolderLabel, isRecent.ToString().ToLower(), zombieType };
-                        var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentZombiesTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
+                        if (count > 0)
+                        {
+                            var labels = new[] { rootDir, dName, env, fullPathFromRoot, isRecent.ToString().ToLower(), zombieType };
+                            var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
 
-                        _metricsManager.SetGaugeValue("n_zombies_in_group_folder", description,
-                            new[] { "root_dir", "d_name", "env", "group_folder", "is_recent", "zombie_type" }, labels, count);
+                            _metricsManager.SetGaugeValue("n_zombies_in_group_folder", description,
+                                new[] { "root_dir", "d_name", "env", "group_folder", "is_recent", "zombie_type" }, labels, count);
 
-                        currentKeys.Add(string.Join('\u0001', labels));
-                    }
+                            currentKeys.Add(string.Join('\u0001', labels));
+                        }
                 }
             }
 
@@ -276,7 +276,7 @@ namespace FileExporterNew.Services
                 foreach (var staleKey in staleKeys)
                 {
                     var labels = staleKey.Split('\u0001');
-                    var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentZombiesTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
+                    var description = $"Zombies count in grouped subfolders by type. The 'is_recent' label indicates if the count is for recent zombies (last {_settings.RecentTimeWindowHours}h) or all zombies (false). The 'zombie_type' indicates observed or non_observed.";
 
                     _metricsManager.RemoveGaugeSeries("n_zombies_in_group_folder", labels);
                 }

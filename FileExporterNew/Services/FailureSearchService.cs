@@ -13,7 +13,6 @@ namespace FileExporterNew.Services
         private readonly MetricsManager _metricsManager;
         private readonly FileHelper _fileHelper;
         private static readonly ConcurrentDictionary<string, (HashSet<string> Keys, DateTime LastUpdated)> _activeMetricKeys = new();
-        private Timer? _cleanupTimer;
 
         public FailureSearchService(IOptions<Settings> settings, ILogger<FailureSearchService> logger, MetricsManager metricsManager, FileHelper fileHelper)
         {
@@ -21,9 +20,6 @@ namespace FileExporterNew.Services
             _logger = logger;
             _metricsManager = metricsManager;
             _fileHelper = fileHelper;
-
-            var cleanupInterval = TimeSpan.FromHours(_settings.CleanupTimerIntervalHours);
-            _cleanupTimer = new Timer(state => CleanupOldEntries(state, _logger), _settings, (int)cleanupInterval.TotalMilliseconds, (int)cleanupInterval.TotalMilliseconds);
         }
 
         public async Task SearchFolderForFailuresAsync(string rootDir, string path, string dName, string env)
@@ -91,7 +87,7 @@ namespace FileExporterNew.Services
         private List<FailureReason> GetRecentFailures(List<FailureReason> allFailures)
         {
             _logger.LogInformation($"Calculating recent failures from {allFailures.Count} total failures.");
-            var cutoff = DateTime.Now.AddHours(-_settings.RecentErrorsTimeWindowHours);
+            var cutoff = DateTime.Now.AddHours(-_settings.RecentTimeWindowHours);
             var recent = allFailures.Where(f => f.LastWriteTime >= cutoff).ToList();
             _logger.LogInformation($"Found {recent.Count} recent failures.");
             return recent;
@@ -124,9 +120,9 @@ namespace FileExporterNew.Services
             {
                 if (folderPath.Equals(path, StringComparison.OrdinalIgnoreCase)) continue;
 
-                var folderName = new DirectoryInfo(folderPath).Name;
-                var labels = new[] { rootDir, dName, env, folderName, isRecent.ToString().ToLower() };
-                var description = $"Failures count in grouped subfolders. The 'is_recent' label indicates if the count is for recent failures (last {_settings.RecentErrorsTimeWindowHours}h) or all failures (false).";
+                var fullPathFromRoot = Path.GetRelativePath(rootDir, folderPath).Replace("\\", "/");
+                var labels = new[] { rootDir, dName, env, fullPathFromRoot, isRecent.ToString().ToLower() };
+                var description = $"Failures count in grouped subfolders. The 'is_recent' label indicates if the count is for recent failures (last {_settings.RecentTimeWindowHours}h) or all failures (false).";
 
                 _metricsManager.SetGaugeValue("n_failures_in_group_folder", description, new[] { "root_dir", "d_name", "env", "group_folder", "is_recent" }, labels, count);
 
@@ -199,7 +195,7 @@ namespace FileExporterNew.Services
                 foreach (var staleKey in staleKeys)
                 {
                     var labels = staleKey.Split('\u0001');
-                    var description = $"Failures count in grouped subfolders. The 'is_recent' label indicates if the count is for recent failures (last {_settings.RecentErrorsTimeWindowHours}h) or all failures (false).";
+                    var description = $"Failures count in grouped subfolders. The 'is_recent' label indicates if the count is for recent failures (last {_settings.RecentTimeWindowHours}h) or all failures (false).";
 
                     _metricsManager.SetGaugeValue("n_failures_in_group_folder", description, new[] { "root_dir", "d_name", "env", "group_folder", "is_recent" }, labels, 0);
                     _metricsManager.RemoveGaugeSeries("n_failures_in_group_folder", labels);
@@ -209,38 +205,6 @@ namespace FileExporterNew.Services
             _activeMetricKeys[metricKey] = (currentKeys, DateTime.UtcNow);
         }
 
-        private static void CleanupOldEntries(object? state, ILogger<FailureSearchService> logger)
-        {
-            logger.LogInformation("CleanupOldEntries timer triggered.");
-            try
-            {
-                var currentSettings = (Settings)state!;
-                var keysToRemove = _activeMetricKeys
-                    .Where(entry => entry.Key.Contains("_") &&
-                                 (DateTime.UtcNow - entry.Value.LastUpdated).TotalHours > currentSettings.CleanupTimerIntervalHours)
-                    .Select(entry => entry.Key)
-                    .ToList();
-
-                foreach (var key in keysToRemove)
-                {
-                    _activeMetricKeys.TryRemove(key, out _);
-                }
-
-                if (keysToRemove.Count > 0)
-                {
-                    logger.LogInformation($"Successfully removed {keysToRemove.Count} old metric keys from _activeMetricKeys.");
-                }
-                else
-                {
-                    logger.LogInformation("No old metric keys to remove from _activeMetricKeys.");
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error occurred during CleanupOldEntries.");
-            }
-
-        }
 
         private void RecordGlobalMetrics(int count, string rootDir, string dName, string env, bool isRecent)
         {
@@ -305,4 +269,3 @@ namespace FileExporterNew.Services
         }
     }
 }
-
