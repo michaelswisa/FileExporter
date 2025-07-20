@@ -63,7 +63,7 @@ namespace FileExporterNew.Services
 
                 try
                 {
-                    var (_, failures) = await _fileHelper.NumberOfFaileds(currentPath);
+                    var failures = await _fileHelper.GetFailuresReason(currentPath);
                     allFailures.AddRange(failures);
 
                     if (ShouldRecurse(dName, depth))

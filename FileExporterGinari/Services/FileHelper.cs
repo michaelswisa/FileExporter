@@ -139,7 +139,7 @@ namespace FileExporterNew.Services
             return failedFilesList;
         }
 
-        public async Task<List<FailureReason>> GetFailuresReason(string path)
+        public async Task<List<FailureReason>> NumberOfFaileds(string path)
         {
             _logger.LogInformation($"Calculating number of failed files for path: {path}");
             if (!Directory.Exists(path))
@@ -174,7 +174,7 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<string> GetFileNameByEnding(string path, string ending)
+        public async Task<string> GetFileNameByContains(string path, string ending)
         {
             if (!Directory.Exists(path))
             {
@@ -183,7 +183,7 @@ namespace FileExporterNew.Services
             }
 
             string[] filesInPath = await GetFilesInPath(path);
-            var file = filesInPath.FirstOrDefault(file => file.EndsWith(ending, StringComparison.OrdinalIgnoreCase));
+            var file = filesInPath.FirstOrDefault(file => file.Contains(ending, StringComparison.OrdinalIgnoreCase));
             return file != null ? Path.GetFileName(file) : string.Empty;
         }
         public async Task<bool> IsInObservedNotFailed(string path)
@@ -199,8 +199,8 @@ namespace FileExporterNew.Services
                          .Take(_settings.MaxFilesToRead)
                          .ToList());
 
-            return !fileNames.Any(name => name.EndsWith(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                    fileNames.Count(name => name.EndsWith(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1;
+            return !fileNames.Any(name => name.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                    fileNames.Count(name => name.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1;
         }
 
         public async Task<bool> NotObservedAndNotFailed(string path)
@@ -215,9 +215,9 @@ namespace FileExporterNew.Services
                          .Select(f => Path.GetFileName(f))
                          .Take(_settings.MaxFilesToRead)
                          .ToList());
-                         
-            return !fileNames.Any(name => name.EndsWith(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                   !fileNames.Any(name => name.EndsWith(ObservedFileEnding, StringComparison.OrdinalIgnoreCase));
+
+            return !fileNames.Any(name => name.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
+                   !fileNames.Any(name => name.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase));
         }
     }
 }
