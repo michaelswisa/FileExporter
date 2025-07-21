@@ -1,20 +1,17 @@
 ﻿using FileExporterNew.Models;
-using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
     public class FileHelper
     {
         private readonly ILogger<FileHelper> _logger;
-        private const string FailedFileEnding = "fail";
-        private const string ObservedFileEnding = "observed";
-        private readonly Settings _settings;
+        private const string FailedFileSubstring = "fail";
+        private const string ObservedFileSubstring = "observed";
         private static readonly HashSet<string> SupportedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp" };
 
-        public FileHelper(ILogger<FileHelper> logger, IOptions<Settings> settings)
+        public FileHelper(ILogger<FileHelper> logger)
         {
             _logger = logger;
-            _settings = settings.Value;
         }
 
         public async Task<string[]> GetFilesInPath(string path)
@@ -22,10 +19,7 @@ namespace FileExporterNew.Services
             _logger.LogInformation("Attempting to get files in path: {Path}", path);
             try
             {
-                var files = await Task.Run(() =>
-                    Directory.EnumerateFileSystemEntries(path)
-                        .Take(_settings.MaxFilesToRead)
-                        .ToArray());
+                var files = await Task.Run(() => Directory.EnumerateFileSystemEntries(path).ToArray());
                 _logger.LogInformation($"Found {files.Length} files in path: {path}");
                 return files;
             }
@@ -52,7 +46,7 @@ namespace FileExporterNew.Services
                     return Array.Empty<string>();
                 }
 
-                var directories = await Task.Run(() => Directory.EnumerateDirectories(path).Take(_settings.MaxFilesToRead));
+                var directories = await Task.Run(() => Directory.EnumerateDirectories(path));
                 var result = directories.Select(d => Path.GetFileName(d)).ToArray();
                 _logger.LogInformation($"Found {result.Length} subdirectories in path: {path}");
                 return result;
@@ -97,33 +91,34 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<List<FailureReason>> GetFailedFilesAsync(string path)
+        public async Task<List<FailureReason>> GetFailureReasonsAsync(string path)
         {
-            _logger.LogInformation($"Attempting to get failed files in path: {path}");
+            _logger.LogInformation($"Attempting to get failure reasons from path: {path}");
+
             if (!Directory.Exists(path))
             {
-                _logger.LogError($"Path: {path} does not exists");
+                _logger.LogError($"Directory does not exist: {path}");
                 return new List<FailureReason>();
             }
 
             var failedFiles = Directory.EnumerateFileSystemEntries(path)
-                .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase))
-                .Take(_settings.MaxFilesToRead);
+                .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase));
 
-            var failedFilesList = new List<FailureReason>();
-            var semaphore = new SemaphoreSlim(Environment.ProcessorCount, Environment.ProcessorCount);
+            var failureReasons = new List<FailureReason>();
+            const int DegreeOfParallelism = 32;
+            var semaphore = new SemaphoreSlim(DegreeOfParallelism, DegreeOfParallelism);
 
             var tasks = failedFiles.Select(async filePath =>
             {
                 await semaphore.WaitAsync();
                 try
                 {
-                    var failedFile = await ReadFileAsync(filePath);
-                    if (failedFile != null)
+                    var failureReason = await ReadFileAsync(filePath);
+                    if (failureReason != null)
                     {
-                        lock (failedFilesList)
+                        lock (failureReasons)
                         {
-                            failedFilesList.Add(failedFile);
+                            failureReasons.Add(failureReason);
                         }
                     }
                 }
@@ -135,22 +130,11 @@ namespace FileExporterNew.Services
 
             await Task.WhenAll(tasks);
             semaphore.Dispose();
-            _logger.LogInformation($"Found {failedFilesList.Count} failed files in path: {path}");
-            return failedFilesList;
+
+            _logger.LogInformation($"Found {failureReasons.Count} failure reasons in path: {path}");
+            return failureReasons;
         }
 
-        public async Task<List<FailureReason>> NumberOfFaileds(string path)
-        {
-            _logger.LogInformation($"Calculating number of failed files for path: {path}");
-            if (!Directory.Exists(path))
-            {
-                _logger.LogError($"Path: {path} does not exist for NumberOfFaileds.");
-            }
-
-            var failedFiles = await GetFailedFilesAsync(path);
-            _logger.LogInformation($"Returning {failedFiles.Count} failed files for path: {path}");
-            return failedFiles;
-        }
 
         public string? FindImageInDirectory(string directoryPath)
         {
@@ -164,7 +148,6 @@ namespace FileExporterNew.Services
             try
             {
                 var imageFile = Directory.EnumerateFiles(directoryPath).FirstOrDefault(file => SupportedImageExtensions.Contains(Path.GetExtension(file)));
-
                 return imageFile;
             }
             catch (Exception ex)
@@ -174,7 +157,7 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<string> GetFileNameByContains(string path, string ending)
+        public async Task<string> GetFileNameContaining(string path, string substring)
         {
             if (!Directory.Exists(path))
             {
@@ -183,9 +166,11 @@ namespace FileExporterNew.Services
             }
 
             string[] filesInPath = await GetFilesInPath(path);
-            var file = filesInPath.FirstOrDefault(file => file.Contains(ending, StringComparison.OrdinalIgnoreCase));
+            
+            var file = filesInPath.FirstOrDefault(f => Path.GetFileName(f).Contains(substring, StringComparison.OrdinalIgnoreCase));
             return file != null ? Path.GetFileName(file) : string.Empty;
         }
+
         public async Task<bool> IsInObservedNotFailed(string path)
         {
             if (!Directory.Exists(path))
@@ -196,11 +181,10 @@ namespace FileExporterNew.Services
             var fileNames = await Task.Run(() =>
                 Directory.EnumerateFiles(path)
                          .Select(f => Path.GetFileName(f))
-                         .Take(_settings.MaxFilesToRead)
                          .ToList());
 
-            return !fileNames.Any(name => name.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                    fileNames.Count(name => name.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase)) == 1;
+            return !fileNames.Any(name => name.Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase)) &&
+                    fileNames.Count(name => name.Contains(ObservedFileSubstring, StringComparison.OrdinalIgnoreCase)) == 1;
         }
 
         public async Task<bool> NotObservedAndNotFailed(string path)
@@ -213,11 +197,10 @@ namespace FileExporterNew.Services
             var fileNames = await Task.Run(() =>
                 Directory.EnumerateFiles(path)
                          .Select(f => Path.GetFileName(f))
-                         .Take(_settings.MaxFilesToRead)
                          .ToList());
 
-            return !fileNames.Any(name => name.Contains(FailedFileEnding, StringComparison.OrdinalIgnoreCase)) &&
-                   !fileNames.Any(name => name.Contains(ObservedFileEnding, StringComparison.OrdinalIgnoreCase));
+            return !fileNames.Any(name => name.Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase)) &&
+                   !fileNames.Any(name => name.Contains(ObservedFileSubstring, StringComparison.OrdinalIgnoreCase));
         }
     }
 }

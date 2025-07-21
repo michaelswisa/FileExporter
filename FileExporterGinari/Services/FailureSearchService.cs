@@ -25,13 +25,24 @@ namespace FileExporterNew.Services
             var queue = new Queue<(string path, int depth)>();
             queue.Enqueue((rootPath, 0));
 
-            while (queue.Count > 0 && allFailures.Count < _settings.MaxFailures)
+            while (queue.Count > 0)
             {
                 var (currentPath, depth) = queue.Dequeue();
                 try
-                {
-                    var failures = await _fileHelper.NumberOfFaileds(currentPath);
-                    allFailures.AddRange(failures);
+                {   if (depth > 0)
+                    {
+                        var failures = await _fileHelper.GetFailureReasonsAsync(currentPath);
+                        if (failures.Any())
+                        {
+                            allFailures.AddRange(failures);
+                        }
+                    }
+
+                    if (allFailures.Count >= _settings.MaxFailures)
+                    {
+                        _logger.LogWarning($"Reached the maximum number of failures ({_settings.MaxFailures}). Stopping scan for {dName}.");
+                        break;
+                    }
 
                     if (ShouldRecurse(dName, depth))
                     {

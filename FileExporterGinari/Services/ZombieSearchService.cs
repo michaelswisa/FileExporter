@@ -5,11 +5,6 @@ using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    /// <summary>
-    /// Service for finding "zombie" folders (stale folders that were not processed).
-    /// This service has two distinct scan types (observed and non-observed), so it contains
-    /// internal refactoring to reduce duplication but does not use the common SearchServiceBase.
-    /// </summary>
     public class ZombieSearchService
     {
         private readonly Settings _settings;
@@ -36,9 +31,6 @@ namespace FileExporterNew.Services
             return SearchFolderForZombiesAsync(rootDir, path, dName, env, "non_observed");
         }
 
-        /// <summary>
-        /// A single, private orchestration method to handle both types of zombie scans.
-        /// </summary>
         private async Task SearchFolderForZombiesAsync(string rootDir, string path, string dName, string env, string zombieType)
         {
             _logger.LogInformation($"Starting scan for {zombieType} zombies in: {path}, dName: {dName}");
@@ -48,9 +40,7 @@ namespace FileExporterNew.Services
             try
             {
                 var (allZombies, recentZombies) = await ScanDirectoryTreeForZombiesAsync(path, normalizedDName, zombieType);
-
                 await RecordZombieMetricsAsync(allZombies, recentZombies, rootDir, path, normalizedDName, env, zombieType);
-
                 _logger.LogInformation($"Completed {zombieType} zombie scan for {normalizedDName}: {allZombies.Count} total, {recentZombies.Count} recent zombies");
             }
             catch (Exception ex)
@@ -84,7 +74,7 @@ namespace FileExporterNew.Services
                     {
                         if (zombieType == "observed" && await _fileHelper.IsInObservedNotFailed(currentPath))
                         {
-                            var observedFileName = await _fileHelper.GetFileNameByContains(currentPath, "observed");
+                            var observedFileName = await _fileHelper.GetFileNameContaining(currentPath, "observed");
                             if (!string.IsNullOrEmpty(observedFileName))
                             {
                                 var fileInfo = new FileInfo(Path.Combine(currentPath, observedFileName));
@@ -112,6 +102,12 @@ namespace FileExporterNew.Services
                                 });
                             }
                         }
+                    }
+
+                    if (allZombies.Count >= _settings.MaxFailures)
+                    {
+                        _logger.LogWarning("Reached the maximum number of zombies ({MaxFailures}). Stopping scan for {DName}.", _settings.MaxFailures, dName);
+                        break;
                     }
 
                     if (ShouldRecurse(dName, depth))
@@ -163,7 +159,7 @@ namespace FileExporterNew.Services
                 .Distinct()
                 .ToList();
 
-            foreach (var groupFolderPath in potentialGroupFolders)
+            foreach (var groupFolderPath in potentialGroupFolders.Where(gfp => gfp != null))
             {
                 if ((await _fileHelper.GetSubDirectories(groupFolderPath)).Length > 0)
                 {
@@ -216,10 +212,6 @@ namespace FileExporterNew.Services
         }
     }
 
-    /// <summary>
-    /// Represents a zombie folder found during a scan.
-    /// Implements ISearchResult to be compatible with common logic if needed in the future.
-    /// </summary>
     public class ZombieFolder : ISearchResult
     {
         public string Path { get; set; } = string.Empty;
