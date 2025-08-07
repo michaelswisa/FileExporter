@@ -11,7 +11,7 @@ namespace FileExporterNew.Services
         protected readonly ILogger _logger;
         protected readonly MetricsManager _metricsManager;
         protected readonly FileHelper _fileHelper;
-        private static readonly ConcurrentDictionary<string, (HashSet<string> Keys, DateTime LastUpdated)> _activeMetricKeys = new();
+        private static readonly ConcurrentDictionary<string, HashSet<string>> _activeMetricKeys = new();
 
         protected SearchServiceBase(IOptions<Settings> settings, ILogger logger, MetricsManager metricsManager, FileHelper fileHelper)
         {
@@ -21,37 +21,17 @@ namespace FileExporterNew.Services
             _fileHelper = fileHelper;
         }
 
-        #region Abstract and Virtual Methods (To be implemented by derived classes)
-
-        /// <summary>
-        /// Scans the directory tree to find specific items. Must be implemented by the derived class.
-        /// </summary>
-        protected abstract Task<List<ISearchResult>> ScanDirectoryTreeAsync(string rootPath, string dName);
-
-        /// <summary>
-        /// Records all relevant metrics for the found items. Must be implemented by the derived class.
-        /// </summary>
-        protected abstract Task RecordMetricsAsync(List<ISearchResult> allItems, List<ISearchResult> recentItems, string rootDir, string path, string dName, string env);
-
-        /// <summary>
-        /// Records the duration of the scan. Must be implemented by the derived class.
-        /// </summary>
-        protected abstract void RecordScanDuration(string rootDir, string dName, string env, long milliseconds);
-
-        /// <summary>
-        /// A hook for derived classes to perform actions after the scan and metrics recording is complete (e.g., save a report).
-        /// </summary>
-        protected virtual Task PostScanProcessingAsync(List<ISearchResult> allItems, List<ISearchResult> recentItems, string path)
+        #region Abstract and Virtual Methods
+        protected abstract Task<DirectoryScanReport> ScanDirectoryTreeAsync(string rootPath, string dName, object? scanContext);
+        protected abstract Task RecordMetricsAsync(DirectoryScanReport allItemsResult, DirectoryScanReport recentItemsResult, string rootDir, string path, string dName, string env, object? scanContext);
+        protected abstract void RecordScanDuration(string rootDir, string dName, string env, long milliseconds, object? scanContext);
+        protected virtual Task PostScanProcessingAsync(List<ISearchResult> allItems, List<ISearchResult> recentItems, string path, object? scanContext)
         {
             return Task.CompletedTask; // Default implementation does nothing.
         }
-
         #endregion
 
-        /// <summary>
-        /// The main orchestration method (Template Method) that drives the scanning process.
-        /// </summary>
-        public async Task SearchFolderAsync(string rootDir, string path, string dName, string env)
+        public async Task SearchFolderAsync(string rootDir, string path, string dName, string env, object? scanContext = null)
         {
             _logger.LogInformation($"Starting scan in root directory: {rootDir}, path: {path}, dName: {dName}, env: {env}");
             var stopwatch = Stopwatch.StartNew();
@@ -59,13 +39,14 @@ namespace FileExporterNew.Services
 
             try
             {
-                var allItems = await ScanDirectoryTreeAsync(path, normalizedDName);
-                var recentItems = GetRecentItems(allItems);
+                var scanResult = await ScanDirectoryTreeAsync(path, normalizedDName, scanContext);
 
-                await RecordMetricsAsync(allItems, recentItems, rootDir, path, normalizedDName, env);
-                await PostScanProcessingAsync(allItems, recentItems, path);
+                var recentItems = GetRecentItems(scanResult.FoundItems);
+                var recentScanResult = CreateRecentReport(scanResult.GroupFolderCounts.Keys, recentItems);
 
-                _logger.LogInformation($"Completed scan for {normalizedDName}: {allItems.Count} total, {recentItems.Count} recent items");
+                await RecordMetricsAsync(scanResult, recentScanResult, rootDir, path, normalizedDName, env, scanContext);
+                await PostScanProcessingAsync(scanResult.FoundItems, recentItems, path, scanContext);
+                _logger.LogInformation($"Completed scan for {normalizedDName}: {scanResult.FoundItems.Count} total, {recentItems.Count} recent items");
             }
             catch (Exception ex)
             {
@@ -74,26 +55,20 @@ namespace FileExporterNew.Services
             }
             finally
             {
-                RecordScanDuration(rootDir, normalizedDName, env, stopwatch.ElapsedMilliseconds);
+                stopwatch.Stop();
+                RecordScanDuration(rootDir, normalizedDName, env, stopwatch.ElapsedMilliseconds, scanContext);
                 _logger.LogInformation($"Scan completed for {normalizedDName} in {stopwatch.ElapsedMilliseconds}ms");
             }
         }
 
         #region Common Helper Methods
 
-        /// <summary>
-        /// Filters a list of items to include only those modified within the configured time window.
-        /// </summary>
-        private List<ISearchResult> GetRecentItems(List<ISearchResult> allItems)
+        protected List<ISearchResult> GetRecentItems(List<ISearchResult> allItems)
         {
-            _logger.LogInformation($"Calculating recent items from {allItems.Count} total items.");
             var cutoff = DateTime.Now.AddHours(-_settings.RecentTimeWindowHours);
             return allItems.Where(f => f.LastWriteTime >= cutoff).ToList();
         }
 
-        /// <summary>
-        /// Determines whether to recurse into subdirectories based on dName and depth settings.
-        /// </summary>
         protected bool ShouldRecurse(string dName, int depth)
         {
             var maxDepth = _settings.GroupedDNnames
@@ -103,22 +78,72 @@ namespace FileExporterNew.Services
             return depth < maxDepth;
         }
 
-        /// <summary>
-        /// Removes stale Prometheus gauge series for a given metric.
-        /// </summary>
+
+        protected async Task EnqueueSubdirectoriesAsync(string dName, int depth, string currentPath, List<string> parentGroups, DirectoryScanReport result, Queue<(string path, int depth, List<string> parentGroups)> queue)
+        {
+            if (ShouldRecurse(dName, depth))
+            {
+                var subdirs = await _fileHelper.GetSubDirectories(currentPath);
+                var currentPathIsGroup = subdirs.Any() && depth > 0;
+
+                if (currentPathIsGroup)
+                {
+                    result.GroupFolderCounts[currentPath] = 0;
+                }
+
+                foreach (var subdir in subdirs)
+                {
+                    var nextParentGroups = new List<string>(parentGroups);
+                    if (currentPathIsGroup)
+                    {
+                        nextParentGroups.Add(currentPath);
+                    }
+                    queue.Enqueue((Path.Combine(currentPath, subdir), depth + 1, nextParentGroups));
+                }
+            }
+        }
+
         protected void CleanupStaleMetrics(string metricName, string metricKey, HashSet<string> currentKeys)
         {
-            _logger.LogInformation($"Starting CleanupStaleMetrics for metric: {metricName}, key: {metricKey}");
-            if (_activeMetricKeys.TryGetValue(metricKey, out var entry))
+            if (_activeMetricKeys.TryGetValue(metricKey, out var oldKeys))
             {
-                var staleKeys = entry.Keys.Except(currentKeys);
+                var staleKeys = oldKeys.Except(currentKeys);
                 foreach (var staleKey in staleKeys)
                 {
                     var labels = staleKey.Split('\u0001');
                     _metricsManager.RemoveGaugeSeries(metricName, labels);
                 }
             }
-            _activeMetricKeys[metricKey] = (currentKeys, DateTime.UtcNow);
+            _activeMetricKeys[metricKey] = currentKeys;
+        }
+
+        private DirectoryScanReport CreateRecentReport(ICollection<string> allGroupFolderPaths, List<ISearchResult> recentItems)
+        {
+            var recentReport = new DirectoryScanReport { FoundItems = recentItems };
+
+            if (!recentItems.Any() || !allGroupFolderPaths.Any())
+            {
+                return recentReport;
+            }
+
+            foreach (var path in allGroupFolderPaths)
+            {
+                recentReport.GroupFolderCounts[path] = 0;
+            }
+
+            foreach (var item in recentItems)
+            {
+                var parentDir = Path.GetDirectoryName(item.Path);
+                while (parentDir != null)
+                {
+                    if (recentReport.GroupFolderCounts.ContainsKey(parentDir))
+                    {
+                        recentReport.GroupFolderCounts[parentDir]++;
+                    }
+                    parentDir = Directory.GetParent(parentDir)?.FullName;
+                }
+            }
+            return recentReport;
         }
 
         #endregion

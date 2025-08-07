@@ -1,60 +1,33 @@
-﻿using System.Diagnostics;
-using FileExporterNew.Models;
+﻿using FileExporterNew.Models;
 using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    public class TranscodedSearchService
+    public class TranscodedSearchService : SearchServiceBase
     {
-        private readonly Settings _settings;
-        private readonly ILogger<TranscodedSearchService> _logger;
-        private readonly MetricsManager _metricsManager;
-        private readonly FileHelper _fileHelper;
-
         public TranscodedSearchService(IOptions<Settings> settings, ILogger<TranscodedSearchService> logger, MetricsManager metricsManager, FileHelper fileHelper)
+            : base(settings, logger, metricsManager, fileHelper)
         {
-            _settings = settings.Value;
-            _logger = logger;
-            _metricsManager = metricsManager;
-            _fileHelper = fileHelper;
         }
 
-        public async Task SearchFoldersForTranscodedAsync(string rootDir, string path, string dName, string env)
+        public Task SearchFoldersForTranscodedAsync(string rootDir, string path, string dName, string env)
         {
-            _logger.LogInformation($"Starting scan for transcoded folders in path: {path} (dName: {dName}, Env: {env})");
-            var stopwatch = Stopwatch.StartNew();
-
-            try
-            {
-                if (!Directory.Exists(path))
-                {
-                    _logger.LogWarning($"The specified path '{path}' for dName '{dName}' does not exist. Skipping scan.");
-                    return;
-                }
-
-                var (allFoldersWithFiles, recentFoldersWithFiles) = await ScanForFoldersWithFilesAsync(path);
-
-                RecordTranscodedMetrics(allFoldersWithFiles.Count, recentFoldersWithFiles.Count, rootDir, dName, env);
-
-                _logger.LogInformation($"Completed transcoded scan for {dName}: {allFoldersWithFiles.Count} total folders with files, {recentFoldersWithFiles.Count} recent folders.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Error scanning for transcoded folders for dName {dName} in path {path}, Error: {ex}");
-                throw;
-            }
-            finally
-            {
-                RecordScanDuration(rootDir, dName, env, stopwatch.ElapsedMilliseconds);
-                _logger.LogInformation($"Transcoded scan for {dName} completed in {stopwatch.ElapsedMilliseconds}ms.");
-            }
+            return SearchFolderAsync(rootDir, path, dName, env, null);
         }
 
-        private async Task<(List<TranscodedFolderInfo> allFolders, List<TranscodedFolderInfo> recentFolders)> ScanForFoldersWithFilesAsync(string rootPath)
-        {
-            var allFoldersWithFiles = new List<TranscodedFolderInfo>();
+        #region Base Class Overrides
 
-            // Get all immediate subdirectories (the "leaf folders" in this context)
+        protected override async Task<DirectoryScanReport> ScanDirectoryTreeAsync(string rootPath, string dName, object? scanContext)
+        {
+            _logger.LogInformation($"Starting transcoded folders scan in path: {rootPath}");
+            var result = new DirectoryScanReport();
+
+            if (!Directory.Exists(rootPath))
+            {
+                _logger.LogWarning($"The specified path '{rootPath}' for dName '{dName}' does not exist. Skipping scan.");
+                return result;
+            }
+
             var subDirectories = await _fileHelper.GetSubDirectories(rootPath);
             _logger.LogDebug($"Found {subDirectories.Length} subdirectories to check in '{rootPath}'.");
 
@@ -63,69 +36,88 @@ namespace FileExporterNew.Services
                 try
                 {
                     var subDirPath = Path.Combine(rootPath, subDirName);
-                    var mostRecentWriteTime = await GetMostRecentFileWriteTimeAsync(subDirPath);
 
-                    // If the method returns a time, it means the folder contains at least one file.
-                    if (mostRecentWriteTime.HasValue)
+                    var fileWriteTime = await GetSingleFileWriteTimeAsync(subDirPath);
+
+                    if (fileWriteTime.HasValue)
                     {
-                        allFoldersWithFiles.Add(new TranscodedFolderInfo
+                        result.FoundItems.Add(new TranscodedFolderInfo
                         {
                             Path = subDirPath,
-                            MostRecentFileWriteTime = mostRecentWriteTime.Value
+                            LastWriteTime = fileWriteTime.Value
                         });
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError($"Error processing subdirectory {subDirName} in {rootPath}, Error: {ex}");
+                    _logger.LogError(ex, $"Error processing subdirectory {subDirName} in {rootPath}");
                 }
             }
 
-            // Determine which of the folders are "recent" based on settings
-            var cutoff = DateTime.Now.AddHours(-_settings.RecentTimeWindowHours);
-            var recentFolders = allFoldersWithFiles
-                .Where(f => f.MostRecentFileWriteTime >= cutoff)
-                .ToList();
-
-            return (allFoldersWithFiles, recentFolders);
+            return result;
         }
 
-        private async Task<DateTime?> GetMostRecentFileWriteTimeAsync(string directoryPath)
+        protected override Task RecordMetricsAsync(DirectoryScanReport allItemsResult, DirectoryScanReport recentItemsResult, string rootDir, string path, string dName, string env, object? scanContext)
         {
-            var files = await _fileHelper.GetFilesInPath(directoryPath);
-            if (files.Length == 0)
-            {
-                return null; // No files in the directory
-            }
+            var totalCount = allItemsResult.FoundItems.Count;
+            var recentCount = recentItemsResult.FoundItems.Count;
 
-            // Find the maximum LastWriteTime among all files in the directory
-            return files.Select(f => new FileInfo(f).LastWriteTime).Max();
-        }
+            _logger.LogInformation($"Recording transcoded metrics for {dName}. Total: {totalCount}, Recent: {recentCount}");
 
-        private void RecordTranscodedMetrics(int totalCount, int recentCount, string rootDir, string dName, string env)
-        {
             var description = $"Count of transcoded folders that contain files. The 'is_recent' label is true for folders with files modified in the last {_settings.RecentTimeWindowHours} hours, and false for the total count.";
             var labelNames = new[] { "root_dir", "d_name", "env", "is_recent" };
 
-            // Record total count
             _metricsManager.SetGaugeValue("total_transcoded_folders", description,
                 labelNames, new[] { rootDir, dName, env, "false" }, totalCount);
 
-            // Record recent count
             _metricsManager.SetGaugeValue("total_transcoded_folders", description,
                 labelNames, new[] { rootDir, dName, env, "true" }, recentCount);
+
+            return Task.CompletedTask;
         }
 
-        private void RecordScanDuration(string rootDir, string dName, string env, long milliseconds)
+        protected override void RecordScanDuration(string rootDir, string dName, string env, long milliseconds, object? scanContext)
         {
             _metricsManager.SetGaugeValue("dname_transcoded_scan_duration_ms", "Duration of the transcoded folder scan in milliseconds.",
                 new[] { "root_dir", "d_name", "env" }, new[] { rootDir, dName, env }, milliseconds);
         }
+
+        #endregion
+
+        #region Private Helper Methods
+
+        private async Task<DateTime?> GetSingleFileWriteTimeAsync(string directoryPath)
+        {
+            var files = await _fileHelper.GetFilesInPath(directoryPath);
+
+            if (files.Length == 0)
+            {
+                return null;
+            }
+
+            if (files.Length > 1)
+            {
+                _logger.LogWarning($"Expected one file in directory {directoryPath}, but found {files.Length}. Using the first file found.");
+            }
+
+            try
+            {
+                var filePath = files[0];
+                return new FileInfo(filePath).LastWriteTime;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error getting FileInfo for a file in directory {directoryPath}, Error: {ex}");
+                return null;
+            }
+        }
+
+        #endregion
     }
 
-    public class TranscodedFolderInfo
+    public class TranscodedFolderInfo : ISearchResult
     {
         public string Path { get; set; } = string.Empty;
-        public DateTime MostRecentFileWriteTime { get; set; }
+        public DateTime LastWriteTime { get; set; }
     }
 }

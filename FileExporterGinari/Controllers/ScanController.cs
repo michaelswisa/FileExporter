@@ -1,150 +1,119 @@
-﻿using FileExporterNew.Models;
-using FileExporterNew.Services;
+﻿using FileExporterGinari;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")] // הנתיב הבסיסי יהיה /api/scan
+    [Route("api/[controller]")]
     public class ScanController : ControllerBase
     {
         private readonly ILogger<ScanController> _logger;
-        private readonly FailureSearchService _failureSearcher;
-        private readonly ZombieSearchService _zombieSearcher;
-        private readonly TranscodedSearchService _transcodedSearcher;
-        private readonly Settings _settings;
+        private readonly ScanManagerService _scanManager;
 
-        // הזרקת כל השירותים הנדרשים דרך הקונסטרקטור
-        public ScanController(
-            ILogger<ScanController> logger,
-            FailureSearchService failureSearcher,
-            ZombieSearchService zombieSearcher,
-            TranscodedSearchService transcodedSearcher,
-            IOptions<Settings> settings)
+        public ScanController(ILogger<ScanController> logger, ScanManagerService scanManager)
         {
             _logger = logger;
-            _failureSearcher = failureSearcher;
-            _zombieSearcher = zombieSearcher;
-            _transcodedSearcher = transcodedSearcher;
-            _settings = settings.Value;
-        }
-
-        [HttpPost("all/{dName}")] // לדוגמה: POST /api/scan/all/Mosh
-        public async Task<IActionResult> ScanAll(string dName)
-        {
-            var (isValid, path, message) = ValidateDName(dName);
-            if (!isValid)
-            {
-                return BadRequest(message);
-            }
-
-            _logger.LogInformation("Manual 'All' scan triggered for d_name: {DName}", dName);
-
-            // הפעלת כל הסריקות במקביל
-            var tasks = new[]
-            {
-                _failureSearcher.SearchFolderForFailuresAsync(_settings.RootPath, path, dName, _settings.Env),
-                _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, path, dName, _settings.Env),
-                _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, path, dName, _settings.Env),
-                _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, path, dName, _settings.Env)
-            };
-
-            await Task.WhenAll(tasks);
-
-            return Ok($"All scans completed for d_name '{dName}'.");
+            _scanManager = scanManager;
         }
 
         /// <summary>
-        /// Triggers a scan for failures for a specific d_name.
+        /// Triggers all scan types for a specific dName to run in the background.
         /// </summary>
-        [HttpPost("failures/{dName}")] // לדוגמה: POST /api/scan/failures/Mosh
-        public async Task<IActionResult> ScanFailures(string dName)
+        [HttpPost("all/{dName}")]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public IActionResult TriggerAllScansForDName(string dName)
         {
-            var (isValid, path, message) = ValidateDName(dName);
-            if (!isValid)
-            {
-                return BadRequest(message);
-            }
+            _logger.LogInformation("API request to trigger all scans for dName: {DName}", dName);
+            // Don't await, run in the background
+            _ = _scanManager.ScanAllTypesForDNameAsync(dName)
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background scan for all types for dName {dName} failed.", dName);
+                    }
+                });
 
-            _logger.LogInformation("Manual 'Failures' scan triggered for d_name: {DName}", dName);
-            await _failureSearcher.SearchFolderForFailuresAsync(_settings.RootPath, path, dName, _settings.Env);
-
-            return Ok($"Failure scan completed for d_name '{dName}'.");
+            return Accepted($"All scans for dName '{dName}' have been queued for execution.");
         }
 
         /// <summary>
-        /// Triggers a scan for observed zombies for a specific d_name.
+        /// Triggers only the failure scan for a specific dName to run in the background.
         /// </summary>
-        [HttpPost("zombies/observed/{dName}")] // לדוגמה: POST /api/scan/zombies/observed/Mosh
-        public async Task<IActionResult> ScanObservedZombies(string dName)
+        [HttpPost("failures/{dName}")]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public IActionResult TriggerFailureScan(string dName)
         {
-            var (isValid, path, message) = ValidateDName(dName);
-            if (!isValid)
-            {
-                return BadRequest(message);
-            }
+            _logger.LogInformation("API request to trigger failure scan for dName: {DName}", dName);
+            // Don't await, run in the background
+            _ = _scanManager.ScanFailuresForDNameAsync(dName)
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background failure scan for dName {dName} failed.", dName);
+                    }
+                });
 
-            _logger.LogInformation("Manual 'Observed Zombies' scan triggered for d_name: {DName}", dName);
-            await _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, path, dName, _settings.Env);
-
-            return Ok($"Observed zombies scan completed for d_name '{dName}'.");
+            return Accepted($"Failure scan for dName '{dName}' has been queued for execution.");
         }
 
         /// <summary>
-        /// Triggers a scan for non-observed zombies for a specific d_name.
+        /// Triggers only the observed zombies scan for a specific dName to run in the background.
         /// </summary>
-        [HttpPost("zombies/non-observed/{dName}")] // לדוגמה: POST /api/scan/zombies/non-observed/Mosh
-        public async Task<IActionResult> ScanNonObservedZombies(string dName)
+        [HttpPost("zombies/observed/{dName}")]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public IActionResult TriggerObservedZombieScan(string dName)
         {
-            var (isValid, path, message) = ValidateDName(dName);
-            if (!isValid)
-            {
-                return BadRequest(message);
-            }
+            _logger.LogInformation("API request to trigger observed zombie scan for dName: {DName}", dName);
+            // Don't await, run in the background
+            _ = _scanManager.ScanZombiesForDNameAsync(dName, "observed")
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background observed zombie scan for dName {dName} failed.", dName);
+                    }
+                });
 
-            _logger.LogInformation("Manual 'Non-Observed Zombies' scan triggered for d_name: {DName}", dName);
-            await _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, path, dName, _settings.Env);
-
-            return Ok($"Non-observed zombies scan completed for d_name '{dName}'.");
+            return Accepted($"Observed zombie scan for dName '{dName}' has been queued for execution.");
         }
 
         /// <summary>
-        /// Triggers a scan for transcoded folders for a specific d_name.
+        /// Triggers only the non-observed zombies scan for a specific dName to run in the background.
         /// </summary>
-        [HttpPost("transcoded/{dName}")] // לדוגמה: POST /api/scan/transcoded/Mosh
-        public async Task<IActionResult> ScanTranscoded(string dName)
+        [HttpPost("zombies/non-observed/{dName}")]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public IActionResult TriggerNonObservedZombieScan(string dName)
         {
-            var (isValid, path, message) = ValidateDName(dName);
-            if (!isValid)
-            {
-                return BadRequest(message);
-            }
+            _logger.LogInformation("API request to trigger non-observed zombie scan for dName: {DName}", dName);
+            // Don't await, run in the background
+            _ = _scanManager.ScanZombiesForDNameAsync(dName, "non-observed")
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background non-observed zombie scan for dName {dName} failed.", dName);
+                    }
+                });
 
-            _logger.LogInformation("Manual 'Transcoded' scan triggered for d_name: {DName}", dName);
-            await _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, path, dName, _settings.Env);
-
-            return Ok($"Transcoded scan completed for d_name '{dName}'.");
+            return Accepted($"Non-observed zombie scan for dName '{dName}' has been queued for execution.");
         }
 
-
-        // פונקציית עזר פרטית לבדיקת תקינות ה-d_name
-        private (bool IsValid, string Path, string Message) ValidateDName(string dName)
+        /// <summary>
+        /// Triggers only the transcoded scan for a specific dName to run in the background.
+        /// </summary>
+        [HttpPost("transcoded/{dName}")]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public IActionResult TriggerTranscodedScan(string dName)
         {
-            if (string.IsNullOrWhiteSpace(dName))
-            {
-                return (false, null, "dName cannot be empty.");
-            }
+            _logger.LogInformation("API request to trigger transcoded scan for dName: {DName}", dName);
+            // Don't await, run in the background
+            _ = _scanManager.ScanTranscodedForDNameAsync(dName)
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background transcoded scan for dName {dName} failed.", dName);
+                    }
+                });
 
-            var fullPath = Path.Combine(_settings.RootPath, dName);
-
-            if (!Directory.Exists(fullPath))
-            {
-                _logger.LogWarning("Attempted to scan a non-existent d_name: {DName}", dName);
-                return (false, null, $"Directory (d_name) '{dName}' not found in root path '{_settings.RootPath}'.");
-            }
-
-            return (true, fullPath, "OK");
+            return Accepted($"Transcoded scan for dName '{dName}' has been queued for execution.");
         }
     }
 }

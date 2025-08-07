@@ -1,5 +1,5 @@
-﻿using FileExporterNew.Models;
-using FileExporterNew.Services;
+﻿using FileExporterGinari;
+using FileExporterNew.Models;
 using Microsoft.Extensions.Options;
 
 public class FileScanningWorker : BackgroundService
@@ -19,51 +19,36 @@ public class FileScanningWorker : BackgroundService
     {
         _logger.LogInformation("File Scanning Worker running.");
 
-        // לולאה שתרוץ כל עוד האפליקציה לא קיבלה הוראת כיבוי
         while (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogInformation("Starting periodic scan at: {time}", DateTimeOffset.Now);
+            _logger.LogInformation("Starting periodic scan cycle at: {time}", DateTimeOffset.Now);
 
             try
             {
-                // שימוש ב-CreateScope כדי לקבל מופעים חדשים של השירותים בכל ריצה.
-                // זה מונע בעיות של אורך חיים (lifetime) של אובייקטים, במיוחד אם יש תלויות ב-DBContext וכדומה.
+                // Create a scope to get scoped services like our new ScanManagerService.
                 using (var scope = _serviceProvider.CreateScope())
                 {
-                    var failureSearcher = scope.ServiceProvider.GetRequiredService<FailureSearchService>();
-                    var zombieSearcher = scope.ServiceProvider.GetRequiredService<ZombieSearchService>();
-                    var transcodedSearcher = scope.ServiceProvider.GetRequiredService<TranscodedSearchService>();
+                    var scanManager = scope.ServiceProvider.GetRequiredService<ScanManagerService>();
 
-                    // רשימת התיקיות לסריקה (d_names)
-                    // ניתן לקרוא אותן ישירות מתוך RootPath או להגדיר אותן בקונפיגורציה
-                    var dNamesToScan = Directory.GetDirectories(_settings.RootPath).Select(Path.GetFileName).ToList();
-
-                    var tasks = new List<Task>();
-
-                    foreach (var dName in dNamesToScan)
-                    {
-                        var dNamePath = Path.Combine(_settings.RootPath, dName);
-
-                        // הוספת כל הסריקות לרשימת משימות שתרוץ במקביל
-                        tasks.Add(failureSearcher.SearchFolderForFailuresAsync(_settings.RootPath, dNamePath, dName, _settings.Env));
-                        tasks.Add(zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, dNamePath, dName, _settings.Env));
-                        tasks.Add(zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, dNamePath, dName, _settings.Env));
-                        tasks.Add(transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, dNamePath, dName, _settings.Env));
-                    }
-
-                    // המתנה לסיום כל המשימות
-                    await Task.WhenAll(tasks);
+                    // The worker's only job is to kick off the full discovery and scan process.
+                    await scanManager.DiscoverAndScanAllAsync();
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An unhandled exception occurred during the scan cycle.");
+                _logger.LogError(ex, "An unhandled exception occurred during the periodic scan cycle.");
             }
 
-            // המתנה של 5 דקות עד לסריקה הבאה
-            _logger.LogInformation($"Scan cycle finished. Waiting for {_settings.ScanIntervalMinutes} minutes until the next cycle.");
-
-            await Task.Delay(TimeSpan.FromMinutes(_settings.ScanIntervalMinutes), stoppingToken);
+            _logger.LogInformation("Scan cycle finished. Waiting for {ScanIntervalMinutes} minutes until the next cycle.", _settings.ScanIntervalMinutes);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(_settings.ScanIntervalMinutes), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // This is expected on shutdown, no need to log an error.
+                _logger.LogInformation("File Scanning Worker is stopping.");
+            }
         }
     }
 }

@@ -91,48 +91,34 @@ namespace FileExporterNew.Services
             }
         }
 
-        public async Task<List<FailureReason>> GetFailureReasonsAsync(string path)
+        public async Task<FailureReason?> GetSingleFailureReasonAsync(string path)
         {
-            _logger.LogInformation($"Attempting to get failure reasons from path: {path}");
+            _logger.LogDebug($"Attempting to get single failure reason from path: {path}");
 
             if (!Directory.Exists(path))
             {
-                _logger.LogError($"Directory does not exist: {path}");
-                return new List<FailureReason>();
+                _logger.LogWarning($"Directory does not exist for failure check: {path}");
+                return null;
             }
 
-            var failedFiles = Directory.EnumerateFileSystemEntries(path)
-                .Where(x => File.Exists(x) && Path.GetFileName(x).Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase));
-
-            var failureReasons = new List<FailureReason>();
-            const int DegreeOfParallelism = 32;
-            var semaphore = new SemaphoreSlim(DegreeOfParallelism, DegreeOfParallelism);
-
-            var tasks = failedFiles.Select(async filePath =>
+            try
             {
-                await semaphore.WaitAsync();
-                try
-                {
-                    var failureReason = await ReadFileAsync(filePath);
-                    if (failureReason != null)
-                    {
-                        lock (failureReasons)
-                        {
-                            failureReasons.Add(failureReason);
-                        }
-                    }
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
+                var failedFilePath = Directory.EnumerateFiles(path)
+                    .FirstOrDefault(f => Path.GetFileName(f).Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase));
 
-            await Task.WhenAll(tasks);
-            semaphore.Dispose();
+                if (failedFilePath == null)
+                {
+                    return null;
+                }
 
-            _logger.LogInformation($"Found {failureReasons.Count} failure reasons in path: {path}");
-            return failureReasons;
+                _logger.LogInformation($"Found failure file at {failedFilePath}. Reading content.");
+                return await ReadFileAsync(failedFilePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while trying to find a failure file in {Path}", path);
+                return null;
+            }
         }
 
 

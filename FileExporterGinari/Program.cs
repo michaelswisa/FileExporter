@@ -1,3 +1,4 @@
+using FileExporterGinari;
 using FileExporterNew.Models;
 using FileExporterNew.Services;
 using Prometheus;
@@ -11,6 +12,8 @@ builder.Services.AddSingleton<MetricsManager>();
 builder.Services.AddSingleton<FailureSearchService>();
 builder.Services.AddSingleton<ZombieSearchService>();
 builder.Services.AddSingleton<TranscodedSearchService>();
+
+builder.Services.AddScoped<ScanManagerService>();
 
 // הוספת שירות הרקע שיפעיל את הסריקות באופן מחזורי
 builder.Services.AddHostedService<FileScanningWorker>();
