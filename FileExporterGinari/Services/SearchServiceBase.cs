@@ -5,15 +5,15 @@ using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    public abstract class SearchServiceBase
+    public abstract class SearchServiceBase : IScanService
     {
         protected readonly Settings _settings;
         protected readonly ILogger _logger;
-        protected readonly MetricsManager _metricsManager;
-        protected readonly FileHelper _fileHelper;
+        protected readonly IMetricsManager _metricsManager;
+        protected readonly IFileHelper _fileHelper;
         private static readonly ConcurrentDictionary<string, HashSet<string>> _activeMetricKeys = new();
 
-        protected SearchServiceBase(IOptions<Settings> settings, ILogger logger, MetricsManager metricsManager, FileHelper fileHelper)
+        protected SearchServiceBase(IOptions<Settings> settings, ILogger logger, IMetricsManager metricsManager, IFileHelper fileHelper)
         {
             _settings = settings.Value;
             _logger = logger;

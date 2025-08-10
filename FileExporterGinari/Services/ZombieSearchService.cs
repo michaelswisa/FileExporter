@@ -1,12 +1,11 @@
-﻿using System.Collections.Concurrent;
-using FileExporterNew.Models;
+﻿using FileExporterNew.Models;
 using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    public class ZombieSearchService : SearchServiceBase
+    public class ZombieSearchService : SearchServiceBase, IZombieSearchService
     {
-        public ZombieSearchService(IOptions<Settings> settings, ILogger<ZombieSearchService> logger, MetricsManager metricsManager, FileHelper fileHelper)
+        public ZombieSearchService(IOptions<Settings> settings, ILogger<ZombieSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
             : base(settings, logger, metricsManager, fileHelper)
         {
         }
@@ -102,16 +101,14 @@ namespace FileExporterNew.Services
                 var observedFileName = await _fileHelper.GetFileNameContaining(path, "observed");
                 if (!string.IsNullOrEmpty(observedFileName))
                 {
-                    var fileInfo = new FileInfo(Path.Combine(path, observedFileName));
                     isZombie = true;
-                    lastWrite = fileInfo.LastWriteTime;
+                    lastWrite = await _fileHelper.GetFileLastWriteTimeAsync(Path.Combine(path, observedFileName));
                 }
             }
             else if (zombieType == "non_observed" && (await _fileHelper.GetSubDirectories(path)).Length == 0 && await _fileHelper.NotObservedAndNotFailed(path))
             {
-                var dirInfo = new DirectoryInfo(path);
-                isZombie = true;
-                lastWrite = dirInfo.LastWriteTime;
+                lastWrite = await _fileHelper.GetDirectoryLastWriteTimeAsync(path);
+                isZombie = lastWrite.HasValue;
             }
 
             if (isZombie && lastWrite.HasValue)

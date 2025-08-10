@@ -3,7 +3,7 @@ using Prometheus;
 
 namespace FileExporterNew.Services
 {
-    public class MetricsManager
+    public class MetricsManager : IMetricsManager
     {
         private readonly ILogger<MetricsManager> _logger;
         private static readonly ConcurrentDictionary<string, Gauge> _gauges = new();

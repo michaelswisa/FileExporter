@@ -9,10 +9,10 @@ namespace FileExporterGinari
     {
         private readonly ILogger<ScanManagerService> _logger;
         private readonly Settings _settings;
-        private readonly FailureSearchService _failureSearcher;
-        private readonly ZombieSearchService _zombieSearcher;
-        private readonly TranscodedSearchService _transcodedSearcher;
-        private readonly FileHelper _fileHelper;
+        private readonly IFailureSearchService _failureSearcher;
+        private readonly IZombieSearchService _zombieSearcher;
+        private readonly ITranscodedSearchService _transcodedSearcher;
+        private readonly IFileHelper _fileHelper;
 
         private const string FailedSubDir = "Failed";
         private const string TranscodedSuffix = "-transcoded";
@@ -23,10 +23,10 @@ namespace FileExporterGinari
         public ScanManagerService(
             ILogger<ScanManagerService> logger,
             IOptions<Settings> settings,
-            FailureSearchService failureSearcher,
-            ZombieSearchService zombieSearcher,
-            TranscodedSearchService transcodedSearcher,
-            FileHelper fileHelper)
+            IFailureSearchService failureSearcher,
+            IZombieSearchService zombieSearcher,
+            ITranscodedSearchService transcodedSearcher,
+            IFileHelper fileHelper)
         {
             _logger = logger;
             _settings = settings.Value;
@@ -44,7 +44,6 @@ namespace FileExporterGinari
                 "Starting new controlled parallel discovery and scan flow. Max parallel scans: {MaxParallel}",
                 _settings.MaxParallelDNameScans);
 
-            // הגבלת המקביליות על בסיס ההגדרה
             using var semaphore = new SemaphoreSlim(_settings.MaxParallelDNameScans);
 
             var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
@@ -59,16 +58,13 @@ namespace FileExporterGinari
 
                 if (!env.Equals(_settings.Env, StringComparison.OrdinalIgnoreCase)) continue;
 
-                // המתן עד שיהיה "סלוט" פנוי בסמפור
                 await semaphore.WaitAsync();
 
                 _logger.LogInformation("Semaphore acquired for dName: {DName}. Queueing up scans.", dName);
 
-                // יצירת המשימה והוספת שחרור הסמפור בסיומה
                 var task = ScanAllTypesForDNameAsync(dName)
                     .ContinueWith(t =>
                     {
-                        // שחרור הסמפור יתבצע תמיד, גם אם המשימה נכשלה
                         semaphore.Release();
                         _logger.LogInformation("Semaphore released for dName: {DName}", dName);
                         if (t.IsFaulted)
@@ -96,7 +92,7 @@ namespace FileExporterGinari
 
         #region On-Demand Scans (API Controller)
 
-        public async Task<bool> ScanAllTypesForDNameAsync(string dName)
+        public virtual async Task<bool> ScanAllTypesForDNameAsync(string dName)
         {
             _logger.LogInformation("Executing all scan types for dName: {DName}", dName);
 
@@ -107,12 +103,10 @@ namespace FileExporterGinari
 
             await Task.WhenAll(failureTask, observedZombieTask, nonObservedZombieTask, transcodedTask);
 
-            // Return true if at least one scan was potentially successful.
-            // The individual methods log if a directory was not found.
             return true;
         }
 
-        public async Task<bool> ScanFailuresForDNameAsync(string dName)
+        public virtual async Task<bool> ScanFailuresForDNameAsync(string dName)
         {
             var env = _settings.Env;
             var dirName = BuildDirectoryName(dName, env);
@@ -129,7 +123,7 @@ namespace FileExporterGinari
             return true;
         }
 
-        public async Task<bool> ScanZombiesForDNameAsync(string dName, string zombieType)
+        public virtual async Task<bool> ScanZombiesForDNameAsync(string dName, string zombieType)
         {
             var env = _settings.Env;
             var dirName = BuildDirectoryName(dName, env);
@@ -153,10 +147,10 @@ namespace FileExporterGinari
             return true;
         }
 
-        public async Task<bool> ScanTranscodedForDNameAsync(string dName)
+        public virtual async Task<bool> ScanTranscodedForDNameAsync(string dName)
         {
             var env = _settings.Env;
-            var transcodedDirName = $"{dName}{TranscodedSuffix}"; // Assuming this is how it's built
+            var transcodedDirName = $"{dName}{TranscodedSuffix}";
             var transcodedDirPath = Path.Combine(_settings.RootPath, transcodedDirName);
 
             if (!Directory.Exists(transcodedDirPath))
@@ -176,13 +170,16 @@ namespace FileExporterGinari
 
         private string BuildDirectoryName(string dName, string env)
         {
-            // This is an assumption based on your regex. You might need to adjust this.
-            // Example: "myservice-landing-dir-prod"
             return $"{dName}-landing-dir-{env}";
         }
 
-        private (string dName, string env)? ParseAndValidateDirectoryName(string dirName)
+        internal (string dName, string env)? ParseAndValidateDirectoryName(string? dirName)
         {
+            if (string.IsNullOrEmpty(dirName))
+            {
+                return null;
+            }
+
             if (!GeneralPattern.IsMatch(dirName))
             {
                 _logger.LogDebug("Directory '{DirName}' failed general regex pattern validation. Skipping.", dirName);
@@ -192,7 +189,6 @@ namespace FileExporterGinari
             var parts = dirName.Split('-');
             if (parts.Length < 2) return null;
 
-            // Assuming dName is everything before "-landing-dir"
             var landingIndex = Array.IndexOf(parts, "landing");
             if (landingIndex <= 0) return null;
 

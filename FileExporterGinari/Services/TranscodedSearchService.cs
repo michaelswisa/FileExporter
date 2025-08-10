@@ -3,9 +3,9 @@ using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    public class TranscodedSearchService : SearchServiceBase
+    public class TranscodedSearchService : SearchServiceBase, ITranscodedSearchService
     {
-        public TranscodedSearchService(IOptions<Settings> settings, ILogger<TranscodedSearchService> logger, MetricsManager metricsManager, FileHelper fileHelper)
+        public TranscodedSearchService(IOptions<Settings> settings, ILogger<TranscodedSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
             : base(settings, logger, metricsManager, fileHelper)
         {
         }

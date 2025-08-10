@@ -2,7 +2,7 @@
 
 namespace FileExporterNew.Services
 {
-    public class FileHelper
+    public class FileHelper : IFileHelper
     {
         private readonly ILogger<FileHelper> _logger;
         private const string FailedFileSubstring = "fail";
@@ -171,6 +171,34 @@ namespace FileExporterNew.Services
 
             return !fileNames.Any(name => name.Contains(FailedFileSubstring, StringComparison.OrdinalIgnoreCase)) &&
                     fileNames.Count(name => name.Contains(ObservedFileSubstring, StringComparison.OrdinalIgnoreCase)) == 1;
+        }
+
+        public async Task<DateTime?> GetFileLastWriteTimeAsync(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath)) return null;
+                return await Task.Run(() => new FileInfo(filePath).LastWriteTime);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting last write time for {FilePath}", filePath);
+                return null;
+            }
+        }
+
+        public async Task<DateTime?> GetDirectoryLastWriteTimeAsync(string directoryPath)
+        {
+            try
+            {
+                if (!Directory.Exists(directoryPath)) return null;
+                return await Task.Run(() => new DirectoryInfo(directoryPath).LastWriteTime);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting last write time for {DirectoryPath}", directoryPath);
+                return null;
+            }
         }
 
         public async Task<bool> NotObservedAndNotFailed(string path)

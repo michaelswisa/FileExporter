@@ -4,9 +4,9 @@ using Microsoft.Extensions.Options;
 
 namespace FileExporterNew.Services
 {
-    public class FailureSearchService : SearchServiceBase
+    public class FailureSearchService : SearchServiceBase, IFailureSearchService
     {
-        public FailureSearchService(IOptions<Settings> settings, ILogger<FailureSearchService> logger, MetricsManager metricsManager, FileHelper fileHelper)
+        public FailureSearchService(IOptions<Settings> settings, ILogger<FailureSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
             : base(settings, logger, metricsManager, fileHelper)
         {
         }
@@ -37,6 +37,8 @@ namespace FileExporterNew.Services
 
                         if (failure != null)
                         {
+                            failure.Image = _fileHelper.FindImageInDirectory(failure.Path);
+
                             result.FoundItems.Add(failure);
                             foreach (var group in parentGroups)
                             {
@@ -74,7 +76,6 @@ namespace FileExporterNew.Services
 
         protected override void RecordScanDuration(string rootDir, string dName, string env, long milliseconds, object? scanContext)
         {
-            // This will not be called if the call in SearchServiceBase is commented out.
             _logger.LogInformation($"Recording failure scan duration for rootDir: {rootDir}, dName: {dName}, env: {env}, duration: {milliseconds}ms");
             _metricsManager.SetGaugeValue("dname_scan_duration_ms", "Duration of d_name scan in milliseconds",
                 new[] { "root_dir", "d_name", "env" }, new[] { rootDir, dName, env }, milliseconds);
@@ -134,7 +135,7 @@ namespace FileExporterNew.Services
                 var data = failures.ToDictionary(f => f.Path, f => new
                 {
                     reason = f.Reason,
-                    image = _fileHelper.FindImageInDirectory(f.Path),
+                    image = f.Image,
                     lastWriteTime = f.LastWriteTime.ToString("yyyy-MM-ddTHH:mm:ss")
                 });
                 var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
