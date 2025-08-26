@@ -11,11 +11,11 @@ public class Program // הפוך את המחלקה ל-public
 
         builder.Services.Configure<Settings>(builder.Configuration.GetSection("Settings"));
 
-        builder.Services.AddSingleton<FileHelper>();
-        builder.Services.AddSingleton<MetricsManager>();
-        builder.Services.AddSingleton<FailureSearchService>();
-        builder.Services.AddSingleton<ZombieSearchService>();
-        builder.Services.AddSingleton<TranscodedSearchService>();
+        builder.Services.AddSingleton<IFileHelper, FileHelper>();
+        builder.Services.AddSingleton<IMetricsManager, MetricsManager>();
+        builder.Services.AddSingleton<IFailureSearchService, FailureSearchService>();
+        builder.Services.AddSingleton<IZombieSearchService, ZombieSearchService>();
+        builder.Services.AddSingleton<ITranscodedSearchService, TranscodedSearchService>();
 
         builder.Services.AddScoped<ScanManagerService>();
 
