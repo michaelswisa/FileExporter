@@ -3,7 +3,7 @@ using FileExporterNew.Models;
 using FileExporterNew.Services;
 using Prometheus;
 
-public class Program // δτεκ ΰϊ δξημχδ μ-public
+public class Program // Χ”Χ¤Χ•Χ ΧΧª Χ”ΧΧ—ΧΧ§Χ” Χ-public
 {
     public static void Main(string[] args)
     {
@@ -19,38 +19,38 @@ public class Program // δτεκ ΰϊ δξημχδ μ-public
 
         builder.Services.AddScoped<ScanManagerService>();
 
-        // δερτϊ ωιψεϊ δψχς ωιτςιμ ΰϊ δρψιχεϊ αΰετο ξηζεψι
+        // Χ”Χ•Χ΅Χ¤Χª Χ©Χ™Χ¨Χ•Χª Χ”Χ¨Χ§ΧΆ Χ©Χ™Χ¤ΧΆΧ™Χ ΧΧª Χ”Χ΅Χ¨Χ™Χ§Χ•Χª Χ‘ΧΧ•Χ¤Χ ΧΧ—Χ–Χ•Χ¨Χ™
         builder.Services.AddHostedService<FileScanningWorker>();
 
         builder.Services.AddControllers();
-        // δερτϊ ϊξιλδ α-Swagger/OpenAPI μϊιςεγ δ-API (ΰετφιεπμι ΰαμ ξεξμυ)
+        // Χ”Χ•Χ΅Χ¤Χª ΧªΧΧ™Χ›Χ” Χ‘-Swagger/OpenAPI ΧΧªΧ™ΧΆΧ•Χ“ Χ”-API (ΧΧ•Χ¤Χ¦Χ™Χ•Χ ΧΧ™ ΧΧ‘Χ ΧΧ•ΧΧΧ¥)
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
 
-        // --- 2. απιιϊ δΰτμιχφιδ ---
+        // --- 2. Χ‘Χ Χ™Χ™Χª Χ”ΧΧ¤ΧΧ™Χ§Χ¦Χ™Χ” ---
         var app = builder.Build();
 
-        // --- 3. δβγψϊ δ-Pipeline ωμ αχωεϊ δ-HTTP ---
+        // --- 3. Χ”Χ’Χ“Χ¨Χª Χ”-Pipeline Χ©Χ Χ‘Χ§Χ©Χ•Χª Χ”-HTTP ---
 
         app.UseSwagger();
         app.UseSwaggerUI();
 
 
-        // δτπιδ ξ-HTTP μ-HTTPS (ΰετφιεπμι)
+        // Χ”Χ¤Χ Χ™Χ” Χ-HTTP Χ-HTTPS (ΧΧ•Χ¤Χ¦Χ™Χ•Χ ΧΧ™)
         app.UseHttpsRedirection();
 
-        // δερτϊ ϊξιλδ α-Routing
+        // Χ”Χ•Χ΅Χ¤Χª ΧªΧΧ™Χ›Χ” Χ‘-Routing
         app.UseRouting();
 
-        // δβγψϊ πχεγϊ δχφδ ωμ Prometheus
-        // λμ τςν ωξιωδε ιβω μ- http://<your_server>:8080/metrics, ρτψιιϊ Prometheus ϊηωεσ ΰϊ λμ δξγγιν δςγλπιιν.
+        // Χ”Χ’Χ“Χ¨Χª Χ Χ§Χ•Χ“Χª Χ”Χ§Χ¦Χ” Χ©Χ Prometheus
+        // Χ›Χ Χ¤ΧΆΧ Χ©ΧΧ™Χ©Χ”Χ• Χ™Χ’Χ© Χ- http://<your_server>:8080/metrics, Χ΅Χ¤Χ¨Χ™Χ™Χª Prometheus ΧªΧ—Χ©Χ•Χ£ ΧΧª Χ›Χ Χ”ΧΧ“Χ“Χ™Χ Χ”ΧΆΧ“Χ›Χ Χ™Χ™Χ.
         app.MapMetrics();
 
-        // ξιτει δ-Controllers (ΰν ιωπν)
+        // ΧΧ™Χ¤Χ•Χ™ Χ”-Controllers (ΧΧ Χ™Χ©Χ Χ)
         app.MapControllers();
 
 
-        // --- 4. δτςμϊ δΰτμιχφιδ ---
+        // --- 4. Χ”Χ¤ΧΆΧΧª Χ”ΧΧ¤ΧΧ™Χ§Χ¦Χ™Χ” ---
         app.Run();
     }
 }
