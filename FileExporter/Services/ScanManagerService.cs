@@ -173,7 +173,7 @@ namespace FileExporter.Services
             return $"{dName}-landing-dir-{env}";
         }
 
-        internal (string dName, string env)? ParseAndValidateDirectoryName(string? dirName)
+        public (string dName, string env)? ParseAndValidateDirectoryName(string? dirName)
         {
             if (string.IsNullOrEmpty(dirName))
             {
