@@ -20,6 +20,7 @@ namespace FileExporter.Services
         private static readonly Regex GeneralPattern = new Regex(@"^\w+(-\w+)*-landing-?dir-\w+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly HashSet<string> ValidEnvs = new(StringComparer.OrdinalIgnoreCase) { "dev", "int", "prod" };
 
+        // ללא שינוי
         public ScanManagerService(
             ILogger<ScanManagerService> logger,
             IOptions<Settings> settings,
@@ -36,8 +37,9 @@ namespace FileExporter.Services
             _fileHelper = fileHelper;
         }
 
-        #region Periodic Scan (Worker)
+        #region Periodic Scan (Worker) - מתודות שממתינות לסיום
 
+        // ללא שינוי
         public async Task DiscoverAndScanAllAsync()
         {
             _logger.LogInformation(
@@ -62,6 +64,7 @@ namespace FileExporter.Services
 
                 _logger.LogInformation("Semaphore acquired for dName: {DName}. Queueing up scans.", dName);
 
+                // קוראת לגרסה שממתינה לסיום כל הסריקות
                 var task = ScanAllTypesForDNameAsync(dName)
                     .ContinueWith(t =>
                     {
@@ -88,142 +91,186 @@ namespace FileExporter.Services
             }
         }
 
-        #endregion
-
-        #region On-Demand Scans (API Controller)
-
+        /// <summary>
+        /// מריץ את כל סוגי הסריקות עבור dName נתון וממתין לסיומן.
+        /// </summary>
+        // עודכן - המתודה קוראת כעת לגרסאות ה-Scan...Async שמיועדות ל-Worker
         public virtual async Task<ScanAllResult> ScanAllTypesForDNameAsync(string dName)
         {
             _logger.LogInformation("Executing all scan types for dName: {DName}", dName);
             var result = new ScanAllResult();
 
-            // We can run the directory checks in parallel
             var failureTask = ScanFailuresForDNameAsync(dName);
             var observedZombieTask = ScanZombiesForDNameAsync(dName, ZombieType.Observed);
             var nonObservedZombieTask = ScanZombiesForDNameAsync(dName, ZombieType.Non_Observed);
             var transcodedTask = ScanTranscodedForDNameAsync(dName);
 
-            // Wait for all checks to complete
             await Task.WhenAll(failureTask, observedZombieTask, nonObservedZombieTask, transcodedTask);
 
-            // Populate the result object
             result.FailureScanQueued = failureTask.Result;
             result.ObservedZombieScanQueued = observedZombieTask.Result;
             result.NonObservedZombieScanQueued = nonObservedZombieTask.Result;
             result.TranscodedScanQueued = transcodedTask.Result;
 
-            // Add informative messages
-            result.Messages.Add($"Failure scan: {(result.FailureScanQueued ? "Queued" : "Skipped (directory not found)")}.");
-            result.Messages.Add($"Observed Zombie scan: {(result.ObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
-            result.Messages.Add($"Non-Observed Zombie scan: {(result.NonObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
-            result.Messages.Add($"Transcoded scan: {(result.TranscodedScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Failure scan: {(result.FailureScanQueued ? "Completed" : "Skipped")}.");
+            result.Messages.Add($"Observed Zombie scan: {(result.ObservedZombieScanQueued ? "Completed" : "Skipped")}.");
+            result.Messages.Add($"Non-Observed Zombie scan: {(result.NonObservedZombieScanQueued ? "Completed" : "Skipped")}.");
+            result.Messages.Add($"Transcoded scan: {(result.TranscodedScanQueued ? "Completed" : "Skipped")}.");
 
             return result;
         }
 
+        /// <summary>
+        /// מפעיל סריקת כשלים וממתין לסיומה. (עבור ה-Worker)
+        /// </summary>
+        // עודכן - מימוש חדש שמבוסס על מתודת עזר פרטית
         public virtual async Task<bool> ScanFailuresForDNameAsync(string inputDName)
         {
-            var dirInfo = await FindDirectoryInfoAsync(inputDName);
-            if (dirInfo == null)
+            var validationResult = await FindAndValidateFailureDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
+
+            var (dName, env, failedDirPath) = validationResult.Value;
+
+            try
             {
-                _logger.LogWarning("Could not find a matching directory for dName '{dName}' in environment '{env}'. Skipping failure scan.", inputDName, _settings.Env);
+                _logger.LogInformation("Worker is executing and awaiting failure scan for {dName}", dName);
+                await _failureSearcher.SearchFolderForFailuresAsync(Path.Combine(_settings.RootPath, FailedSubDir), failedDirPath, dName, env);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Awaited failure scan for dName {dName} failed.", dName);
                 return false;
             }
+        }
 
-            var (dName, env, actualDirName) = dirInfo.Value;
-            var failedDirPath = Path.Combine(_settings.RootPath, FailedSubDir, actualDirName);
+        /// <summary>
+        /// מפעיל סריקת זומבים וממתין לסיומה. (עבור ה-Worker)
+        /// </summary>
+        // עודכן - מימוש חדש שמבוסס על מתודת עזר פרטית
+        public virtual async Task<bool> ScanZombiesForDNameAsync(string inputDName, ZombieType zombieType)
+        {
+            var validationResult = await FindAndValidateBaseDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
 
-            if (!Directory.Exists(failedDirPath))
+            var (dName, env, originalDirPath) = validationResult.Value;
+
+            try
             {
-                _logger.LogWarning("'Failed' directory not found for dName {dName} at {Path}. Skipping failure scan.", dName, failedDirPath);
+                _logger.LogInformation("Worker is executing and awaiting {zombieType} zombie scan for {dName}", zombieType, dName);
+                Task scanTask = zombieType == ZombieType.Observed
+                    ? _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env)
+                    : _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
+
+                await scanTask;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Awaited {zombieType} zombie scan for dName {dName} failed.", zombieType, dName);
                 return false;
             }
+        }
 
-            _logger.LogInformation("Initiating failure scan for dName {dName}", dName);
+        /// <summary>
+        /// מפעיל סריקת קבצים מקודדים מחדש וממתין לסיומה. (עבור ה-Worker)
+        /// </summary>
+        // עודכן - מימוש חדש שמבוסס על מתודת עזר פרטית
+        public virtual async Task<bool> ScanTranscodedForDNameAsync(string inputDName)
+        {
+            var validationResult = await FindAndValidateTranscodedDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
+
+            var (dName, env, transcodedPath) = validationResult.Value;
+
+            try
+            {
+                _logger.LogInformation("Worker is executing and awaiting transcoded scan for {dName}", dName);
+                await _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, transcodedPath, dName, env);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Awaited transcoded scan for dName {dName} failed.", dName);
+                return false;
+            }
+        }
+        #endregion
+
+        #region On-Demand Scans (API Controller) - מתודות שמפעילות ברקע
+
+        /// <summary>
+        /// מכניס סריקת כשלים לתור לביצוע ברקע. (עבור ה-API)
+        /// </summary>
+        // חדש - מתודה ייעודית וברורה עבור ה-API
+        public virtual async Task<bool> QueueFailureScanForDNameAsync(string inputDName)
+        {
+            var validationResult = await FindAndValidateFailureDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
+
+            var (dName, env, failedDirPath) = validationResult.Value;
+
+            _logger.LogInformation("API is queueing a background failure scan for dName {dName}", dName);
             _ = _failureSearcher.SearchFolderForFailuresAsync(Path.Combine(_settings.RootPath, FailedSubDir), failedDirPath, dName, env)
                 .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background failure scan for dName {dName} failed.", dName);
-                    }
+                    if (t.IsFaulted) _logger.LogError(t.Exception, "Background failure scan for dName {dName} failed.", dName);
                 });
+
             return true;
         }
 
-        public virtual async Task<bool> ScanZombiesForDNameAsync(string inputDName, ZombieType zombieType)
+        /// <summary>
+        /// מכניס סריקת זומבים לתור לביצוע ברקע. (עבור ה-API)
+        /// </summary>
+        // חדש - מתודה ייעודית וברורה עבור ה-API
+        public virtual async Task<bool> QueueZombiesForDNameAsync(string inputDName, ZombieType zombieType)
         {
-            var dirInfo = await FindDirectoryInfoAsync(inputDName);
-            if (dirInfo == null)
-            {
-                _logger.LogWarning("Could not find a matching directory for dName '{dName}' in environment '{env}'. Skipping {zombieType} zombie scan.", inputDName, _settings.Env, zombieType);
-                return false;
-            }
+            var validationResult = await FindAndValidateBaseDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
 
-            var (dName, env, actualDirName) = dirInfo.Value;
-            var originalDirPath = Path.Combine(_settings.RootPath, actualDirName);
+            var (dName, env, originalDirPath) = validationResult.Value;
 
-            _logger.LogInformation("Initiating {zombieType} zombie scan for dName {dName}", zombieType, dName);
+            _logger.LogInformation("API is queueing a background {zombieType} zombie scan for {dName}", zombieType, dName);
 
-            Task scanTask;
-            if (zombieType == ZombieType.Observed)
-            {
-                scanTask = _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
-            }
-            else
-            {
-                scanTask = _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
-            }
+            Task scanTask = zombieType == ZombieType.Observed
+                ? _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env)
+                : _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
 
             _ = scanTask.ContinueWith(t => {
-                if (t.IsFaulted)
-                {
-                    _logger.LogError(t.Exception, "Background {zombieType} zombie scan for dName {dName} failed.", zombieType, dName);
-                }
+                if (t.IsFaulted) _logger.LogError(t.Exception, "Background {zombieType} zombie scan for dName {dName} failed.", zombieType, dName);
             });
 
             return true;
         }
 
-        public virtual async Task<bool> ScanTranscodedForDNameAsync(string inputDName)
+        /// <summary>
+        /// מכניס סריקת קבצים מקודדים מחדש לתור לביצוע ברקע. (עבור ה-API)
+        /// </summary>
+        // חדש - מתודה ייעודית וברורה עבור ה-API
+        public virtual async Task<bool> QueueTranscodedScanForDNameAsync(string inputDName)
         {
-            // First, find the base directory to get the correct dName casing and env
-            var dirInfo = await FindDirectoryInfoAsync(inputDName);
-            if (dirInfo == null)
-            {
-                _logger.LogWarning("Could not find a base directory for dName '{dName}'. Skipping transcoded scan.", inputDName);
-                return false;
-            }
+            var validationResult = await FindAndValidateTranscodedDirectoryAsync(inputDName);
+            if (validationResult == null) return false;
 
-            var (dName, env, _) = dirInfo.Value;
+            var (dName, env, transcodedPath) = validationResult.Value;
 
-            var transcodedInfo = await FindTranscodedDirectoryInfoAsync(dName);
-
-            // 2. Check if the result itself is null (meaning no directory was found)
-            if (transcodedInfo == null)
-            {
-                _logger.LogWarning("'transcoded' directory not found for dName {dName}. Skipping transcoded scan.", dName);
-                return false;
-            }
-
-            // 3. Now that we know transcodedInfo is not null, we can safely access its .Value and deconstruct it.
-            var (actualTranscodedDirName, transcodedPath) = transcodedInfo.Value;
-
-            _logger.LogInformation("Initiating transcoded scan for dName {dName}", dName);
-            _ = _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, transcodedPath!, dName, env)
+            _logger.LogInformation("API is queueing a background transcoded scan for {dName}", dName);
+            _ = _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, transcodedPath, dName, env)
                  .ContinueWith(t => {
-                     if (t.IsFaulted)
-                     {
-                         _logger.LogError(t.Exception, "Background transcoded scan for dName {dName} failed.", dName);
-                     }
+                     if (t.IsFaulted) _logger.LogError(t.Exception, "Background transcoded scan for dName {dName} failed.", dName);
                  });
 
             return true;
         }
-
         #endregion
 
-        #region Private Helpers
-        private async Task<(string dName, string env, string actualDirName)?> FindDirectoryInfoAsync(string inputDName)
+        #region Private Helpers - מתודות עזר פרטיות למניעת שכפול קוד
+
+        /// <summary>
+        /// מוצא את תיקיית הבסיס, מאמת אותה ומחזיר את המידע הדרוש.
+        /// </summary>
+        // עודכן - מיקוד מחדש של המתודה הקודמת FindDirectoryInfoAsync
+        private async Task<(string dName, string env, string fullPath)?> FindAndValidateBaseDirectoryAsync(string inputDName)
         {
             var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
             foreach (var dirName in subDirNames)
@@ -236,28 +283,62 @@ namespace FileExporter.Services
                 if (parsedEnv.Equals(_settings.Env, StringComparison.OrdinalIgnoreCase) &&
                     parsedDName.Equals(inputDName, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Return the parsed dName and env, and the *actual* directory name with its correct casing
-                    return (parsedDName, parsedEnv, dirName);
+                    return (parsedDName, parsedEnv, Path.Combine(_settings.RootPath, dirName));
                 }
             }
+            _logger.LogWarning("Could not find a base directory for dName '{dName}' in environment '{env}'.", inputDName, _settings.Env);
             return null;
         }
 
-        private async Task<(string? actualDirName, string? fullPath)?> FindTranscodedDirectoryInfoAsync(string dName)
+        /// <summary>
+        /// מוצא את תיקיית הכשלים, מאמת אותה ומחזיר את המידע הדרוש.
+        /// </summary>
+        // חדש - מתודת עזר ייעודית
+        private async Task<(string dName, string env, string fullPath)?> FindAndValidateFailureDirectoryAsync(string inputDName)
         {
-            var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
+            var baseDirInfo = await FindAndValidateBaseDirectoryAsync(inputDName);
+            if (baseDirInfo == null) return null;
+
+            var (dName, env, _) = baseDirInfo.Value;
+            // שם התיקייה בפועל יכול להיות עם אותיות גדולות/קטנות שונות, לכן נשתמש בשם שחזר מ-FindAndValidateBaseDirectoryAsync
+            var actualDirName = Path.GetFileName(baseDirInfo.Value.fullPath);
+            var failedDirPath = Path.Combine(_settings.RootPath, FailedSubDir, actualDirName);
+
+            if (!Directory.Exists(failedDirPath))
+            {
+                _logger.LogWarning("'Failed' directory not found for dName {dName} at {Path}.", dName, failedDirPath);
+                return null;
+            }
+
+            return (dName, env, failedDirPath);
+        }
+
+        /// <summary>
+        /// מוצא את תיקיית ה-transcoded, מאמת אותה ומחזיר את המידע הדרוש.
+        /// </summary>
+        // עודכן - מיקוד מחדש של המתודה הקודמת FindTranscodedDirectoryInfoAsync
+        private async Task<(string dName, string env, string fullPath)?> FindAndValidateTranscodedDirectoryAsync(string inputDName)
+        {
+            var baseDirInfo = await FindAndValidateBaseDirectoryAsync(inputDName);
+            if (baseDirInfo == null) return null;
+
+            var (dName, env, _) = baseDirInfo.Value;
             var expectedDirName = $"{dName}{TranscodedSuffix}";
 
+            var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
             foreach (var dirName in subDirNames)
             {
                 if (dirName.Equals(expectedDirName, StringComparison.OrdinalIgnoreCase))
                 {
-                    return (dirName, Path.Combine(_settings.RootPath, dirName));
+                    return (dName, env, Path.Combine(_settings.RootPath, dirName));
                 }
             }
+
+            _logger.LogWarning("'transcoded' directory not found for dName {dName}.", dName);
             return null;
         }
 
+        // ללא שינוי
         public (string dName, string env)? ParseAndValidateDirectoryName(string? dirName)
         {
             if (string.IsNullOrEmpty(dirName))
