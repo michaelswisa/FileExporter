@@ -24,14 +24,27 @@ namespace FileExporter.Controllers
         {
             _logger.LogInformation("API request to trigger all scans for dName: {DName}", dName);
 
-            var result = await _scanManager.ScanAllTypesForDNameAsync(dName);
+            // שינוי: במקום לקרוא למתודה אחת, אנו קוראים לכל מתודת Queue בנפרד
+            // כדי לבנות את התשובה המפורטת, מבלי להמתין לסיום הסריקות.
+            var result = new ScanAllResult
+            {
+                FailureScanQueued = await _scanManager.QueueFailureScanForDNameAsync(dName),
+                ObservedZombieScanQueued = await _scanManager.QueueZombiesForDNameAsync(dName, ZombieType.Observed),
+                NonObservedZombieScanQueued = await _scanManager.QueueZombiesForDNameAsync(dName, ZombieType.Non_Observed),
+                TranscodedScanQueued = await _scanManager.QueueTranscodedScanForDNameAsync(dName)
+            };
+
+            // הוספת הודעות למשתמש בהתבסס על מה שהצליח להיכנס לתור
+            result.Messages.Add($"Failure scan: {(result.FailureScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Observed Zombie scan: {(result.ObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Non-Observed Zombie scan: {(result.NonObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Transcoded scan: {(result.TranscodedScanQueued ? "Queued" : "Skipped (directory not found)")}.");
 
             if (!result.AnyScanQueued)
             {
                 return NotFound($"No matching directories found to scan for dName '{dName}'.");
             }
 
-            // The result object will be serialized in the response body
             return Accepted(result);
         }
 
@@ -42,7 +55,8 @@ namespace FileExporter.Controllers
         {
             _logger.LogInformation("API request to trigger failure scan for dName: {DName}", dName);
 
-            var scanQueued = await _scanManager.ScanFailuresForDNameAsync(dName);
+            // שינוי: קריאה למתודת ה-Queue החדשה
+            var scanQueued = await _scanManager.QueueFailureScanForDNameAsync(dName);
 
             if (scanQueued)
             {
@@ -61,7 +75,8 @@ namespace FileExporter.Controllers
         {
             _logger.LogInformation("API request to trigger observed zombie scan for dName: {DName}", dName);
 
-            var scanQueued = await _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Observed);
+            // שינוי: קריאה למתודת ה-Queue החדשה
+            var scanQueued = await _scanManager.QueueZombiesForDNameAsync(dName, ZombieType.Observed);
 
             if (scanQueued)
             {
@@ -80,7 +95,8 @@ namespace FileExporter.Controllers
         {
             _logger.LogInformation("API request to trigger non-observed zombie scan for dName: {DName}", dName);
 
-            var scanQueued = await _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Non_Observed);
+            // שינוי: קריאה למתודת ה-Queue החדשה
+            var scanQueued = await _scanManager.QueueZombiesForDNameAsync(dName, ZombieType.Non_Observed);
 
             if (scanQueued)
             {
@@ -100,7 +116,8 @@ namespace FileExporter.Controllers
         {
             _logger.LogInformation("API request to trigger transcoded scan for dName: {DName}", dName);
 
-            var scanQueued = await _scanManager.ScanTranscodedForDNameAsync(dName);
+            // שינוי: קריאה למתודת ה-Queue החדשה
+            var scanQueued = await _scanManager.QueueTranscodedScanForDNameAsync(dName);
 
             if (scanQueued)
             {
