@@ -65,7 +65,7 @@ namespace FileExporter.tests
             { CallBase = true }; // `CallBase = true` is crucial for a spy.
 
             // We setup the method we want to track. It will now return a completed task instead of running its real logic.
-            scanManagerSpy.Setup(s => s.ScanAllTypesForDNameAsync(It.IsAny<string>())).ReturnsAsync(true);
+            scanManagerSpy.Setup(s => s.ScanAllTypesForDNameAsync(It.IsAny<string>())).ReturnsAsync(new ScanAllResult());
 
             // ACT
             await scanManagerSpy.Object.DiscoverAndScanAllAsync();

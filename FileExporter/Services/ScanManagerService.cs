@@ -92,25 +92,46 @@ namespace FileExporter.Services
 
         #region On-Demand Scans (API Controller)
 
-        public virtual async Task<bool> ScanAllTypesForDNameAsync(string dName)
+        public virtual async Task<ScanAllResult> ScanAllTypesForDNameAsync(string dName)
         {
             _logger.LogInformation("Executing all scan types for dName: {DName}", dName);
+            var result = new ScanAllResult();
 
+            // We can run the directory checks in parallel
             var failureTask = ScanFailuresForDNameAsync(dName);
             var observedZombieTask = ScanZombiesForDNameAsync(dName, ZombieType.Observed);
             var nonObservedZombieTask = ScanZombiesForDNameAsync(dName, ZombieType.Non_Observed);
             var transcodedTask = ScanTranscodedForDNameAsync(dName);
 
+            // Wait for all checks to complete
             await Task.WhenAll(failureTask, observedZombieTask, nonObservedZombieTask, transcodedTask);
 
-            return true;
+            // Populate the result object
+            result.FailureScanQueued = failureTask.Result;
+            result.ObservedZombieScanQueued = observedZombieTask.Result;
+            result.NonObservedZombieScanQueued = nonObservedZombieTask.Result;
+            result.TranscodedScanQueued = transcodedTask.Result;
+
+            // Add informative messages
+            result.Messages.Add($"Failure scan: {(result.FailureScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Observed Zombie scan: {(result.ObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Non-Observed Zombie scan: {(result.NonObservedZombieScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+            result.Messages.Add($"Transcoded scan: {(result.TranscodedScanQueued ? "Queued" : "Skipped (directory not found)")}.");
+
+            return result;
         }
 
-        public virtual async Task<bool> ScanFailuresForDNameAsync(string dName)
+        public virtual async Task<bool> ScanFailuresForDNameAsync(string inputDName)
         {
-            var env = _settings.Env;
-            var dirName = BuildDirectoryName(dName, env);
-            var failedDirPath = Path.Combine(_settings.RootPath, FailedSubDir, dirName);
+            var dirInfo = await FindDirectoryInfoAsync(inputDName);
+            if (dirInfo == null)
+            {
+                _logger.LogWarning("Could not find a matching directory for dName '{dName}' in environment '{env}'. Skipping failure scan.", inputDName, _settings.Env);
+                return false;
+            }
+
+            var (dName, env, actualDirName) = dirInfo.Value;
+            var failedDirPath = Path.Combine(_settings.RootPath, FailedSubDir, actualDirName);
 
             if (!Directory.Exists(failedDirPath))
             {
@@ -119,58 +140,122 @@ namespace FileExporter.Services
             }
 
             _logger.LogInformation("Initiating failure scan for dName {dName}", dName);
-            await _failureSearcher.SearchFolderForFailuresAsync(Path.Combine(_settings.RootPath, FailedSubDir), failedDirPath, dName, env);
+            _ = _failureSearcher.SearchFolderForFailuresAsync(Path.Combine(_settings.RootPath, FailedSubDir), failedDirPath, dName, env)
+                .ContinueWith(t => {
+                    if (t.IsFaulted)
+                    {
+                        _logger.LogError(t.Exception, "Background failure scan for dName {dName} failed.", dName);
+                    }
+                });
             return true;
         }
 
-        public virtual async Task<bool> ScanZombiesForDNameAsync(string dName, ZombieType zombieType)
+        public virtual async Task<bool> ScanZombiesForDNameAsync(string inputDName, ZombieType zombieType)
         {
-            var env = _settings.Env;
-            var dirName = BuildDirectoryName(dName, env);
-            var originalDirPath = Path.Combine(_settings.RootPath, dirName);
-
-            if (!Directory.Exists(originalDirPath))
+            var dirInfo = await FindDirectoryInfoAsync(inputDName);
+            if (dirInfo == null)
             {
-                _logger.LogWarning("Original directory not found for dName {dName} at {Path}. Skipping {zombieType} zombie scan.", dName, originalDirPath, zombieType);
+                _logger.LogWarning("Could not find a matching directory for dName '{dName}' in environment '{env}'. Skipping {zombieType} zombie scan.", inputDName, _settings.Env, zombieType);
                 return false;
             }
 
+            var (dName, env, actualDirName) = dirInfo.Value;
+            var originalDirPath = Path.Combine(_settings.RootPath, actualDirName);
+
             _logger.LogInformation("Initiating {zombieType} zombie scan for dName {dName}", zombieType, dName);
+
+            Task scanTask;
             if (zombieType == ZombieType.Observed)
             {
-                await _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
+                scanTask = _zombieSearcher.SearchFolderForObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
             }
             else
             {
-                await _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
+                scanTask = _zombieSearcher.SearchFolderForNonObservedZombiesAsync(_settings.RootPath, originalDirPath, dName, env);
             }
+
+            _ = scanTask.ContinueWith(t => {
+                if (t.IsFaulted)
+                {
+                    _logger.LogError(t.Exception, "Background {zombieType} zombie scan for dName {dName} failed.", zombieType, dName);
+                }
+            });
+
             return true;
         }
 
-        public virtual async Task<bool> ScanTranscodedForDNameAsync(string dName)
+        public virtual async Task<bool> ScanTranscodedForDNameAsync(string inputDName)
         {
-            var env = _settings.Env;
-            var transcodedDirName = $"{dName}{TranscodedSuffix}";
-            var transcodedDirPath = Path.Combine(_settings.RootPath, transcodedDirName);
-
-            if (!Directory.Exists(transcodedDirPath))
+            // First, find the base directory to get the correct dName casing and env
+            var dirInfo = await FindDirectoryInfoAsync(inputDName);
+            if (dirInfo == null)
             {
-                _logger.LogWarning("'transcoded' directory not found for dName {dName} at {Path}. Skipping transcoded scan.", dName, transcodedDirPath);
+                _logger.LogWarning("Could not find a base directory for dName '{dName}'. Skipping transcoded scan.", inputDName);
                 return false;
             }
 
+            var (dName, env, _) = dirInfo.Value;
+
+            var transcodedInfo = await FindTranscodedDirectoryInfoAsync(dName);
+
+            // 2. Check if the result itself is null (meaning no directory was found)
+            if (transcodedInfo == null)
+            {
+                _logger.LogWarning("'transcoded' directory not found for dName {dName}. Skipping transcoded scan.", dName);
+                return false;
+            }
+
+            // 3. Now that we know transcodedInfo is not null, we can safely access its .Value and deconstruct it.
+            var (actualTranscodedDirName, transcodedPath) = transcodedInfo.Value;
+
             _logger.LogInformation("Initiating transcoded scan for dName {dName}", dName);
-            await _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, transcodedDirPath, dName, env);
+            _ = _transcodedSearcher.SearchFoldersForTranscodedAsync(_settings.RootPath, transcodedPath!, dName, env)
+                 .ContinueWith(t => {
+                     if (t.IsFaulted)
+                     {
+                         _logger.LogError(t.Exception, "Background transcoded scan for dName {dName} failed.", dName);
+                     }
+                 });
+
             return true;
         }
 
         #endregion
 
         #region Private Helpers
-
-        private string BuildDirectoryName(string dName, string env)
+        private async Task<(string dName, string env, string actualDirName)?> FindDirectoryInfoAsync(string inputDName)
         {
-            return $"{dName}-landing-dir-{env}";
+            var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
+            foreach (var dirName in subDirNames)
+            {
+                var parsedInfo = ParseAndValidateDirectoryName(dirName);
+                if (parsedInfo == null) continue;
+
+                var (parsedDName, parsedEnv) = parsedInfo.Value;
+
+                if (parsedEnv.Equals(_settings.Env, StringComparison.OrdinalIgnoreCase) &&
+                    parsedDName.Equals(inputDName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Return the parsed dName and env, and the *actual* directory name with its correct casing
+                    return (parsedDName, parsedEnv, dirName);
+                }
+            }
+            return null;
+        }
+
+        private async Task<(string? actualDirName, string? fullPath)?> FindTranscodedDirectoryInfoAsync(string dName)
+        {
+            var subDirNames = await _fileHelper.GetSubDirectories(_settings.RootPath);
+            var expectedDirName = $"{dName}{TranscodedSuffix}";
+
+            foreach (var dirName in subDirNames)
+            {
+                if (dirName.Equals(expectedDirName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (dirName, Path.Combine(_settings.RootPath, dirName));
+                }
+            }
+            return null;
         }
 
         public (string dName, string env)? ParseAndValidateDirectoryName(string? dirName)

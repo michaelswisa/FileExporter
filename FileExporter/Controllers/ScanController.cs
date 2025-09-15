@@ -1,4 +1,5 @@
-﻿using FileExporter.Services;
+﻿using FileExporter.Models;
+using FileExporter.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FileExporter.Controllers
@@ -17,89 +18,98 @@ namespace FileExporter.Controllers
         }
 
         [HttpPost("all/{dName}")]
-        [ProducesResponseType(StatusCodes.Status202Accepted)]
-        public IActionResult TriggerAllScansForDName(string dName)
+        [ProducesResponseType(typeof(ScanAllResult), StatusCodes.Status202Accepted)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TriggerAllScansForDName(string dName)
         {
             _logger.LogInformation("API request to trigger all scans for dName: {DName}", dName);
 
-            _ = _scanManager.ScanAllTypesForDNameAsync(dName)
-                .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background scan for all types for dName {dName} failed.", dName);
-                    }
-                });
+            var result = await _scanManager.ScanAllTypesForDNameAsync(dName);
 
-            return Accepted($"All scans for dName '{dName}' have been queued for execution.");
+            if (!result.AnyScanQueued)
+            {
+                return NotFound($"No matching directories found to scan for dName '{dName}'.");
+            }
+
+            // The result object will be serialized in the response body
+            return Accepted(result);
         }
 
         [HttpPost("failures/{dName}")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
-        public IActionResult TriggerFailureScan(string dName)
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TriggerFailureScan(string dName)
         {
             _logger.LogInformation("API request to trigger failure scan for dName: {DName}", dName);
 
-            _ = _scanManager.ScanFailuresForDNameAsync(dName)
-                .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background failure scan for dName {dName} failed.", dName);
-                    }
-                });
+            var scanQueued = await _scanManager.ScanFailuresForDNameAsync(dName);
 
-            return Accepted($"Failure scan for dName '{dName}' has been queued for execution.");
+            if (scanQueued)
+            {
+                return Accepted($"Failure scan for dName '{dName}' has been queued for execution.");
+            }
+            else
+            {
+                return NotFound($"Directory for failure scan corresponding to dName '{dName}' not found.");
+            }
         }
 
         [HttpPost("zombies/observed/{dName}")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
-        public IActionResult TriggerObservedZombieScan(string dName)
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TriggerObservedZombieScan(string dName)
         {
             _logger.LogInformation("API request to trigger observed zombie scan for dName: {DName}", dName);
 
-            _ = _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Observed)
-                .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background observed zombie scan for dName {dName} failed.", dName);
-                    }
-                });
+            var scanQueued = await _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Observed);
 
-            return Accepted($"Observed zombie scan for dName '{dName}' has been queued for execution.");
+            if (scanQueued)
+            {
+                return Accepted($"Observed zombie scan for dName '{dName}' has been queued for execution.");
+            }
+            else
+            {
+                return NotFound($"Directory for observed zombie scan corresponding to dName '{dName}' not found.");
+            }
         }
 
         [HttpPost("zombies/non-observed/{dName}")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
-        public IActionResult TriggerNonObservedZombieScan(string dName)
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TriggerNonObservedZombieScan(string dName)
         {
             _logger.LogInformation("API request to trigger non-observed zombie scan for dName: {DName}", dName);
 
-            _ = _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Non_Observed)
-                .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background non-observed zombie scan for dName {dName} failed.", dName);
-                    }
-                });
+            var scanQueued = await _scanManager.ScanZombiesForDNameAsync(dName, ZombieType.Non_Observed);
 
-            return Accepted($"Non-observed zombie scan for dName '{dName}' has been queued for execution.");
+            if (scanQueued)
+            {
+                return Accepted($"Non-observed zombie scan for dName '{dName}' has been queued for execution.");
+            }
+            else
+            {
+                return NotFound($"Directory for non-observed zombie scan corresponding to dName '{dName}' not found.");
+            }
         }
 
 
         [HttpPost("transcoded/{dName}")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
-        public IActionResult TriggerTranscodedScan(string dName)
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TriggerTranscodedScan(string dName)
         {
             _logger.LogInformation("API request to trigger transcoded scan for dName: {DName}", dName);
 
-            _ = _scanManager.ScanTranscodedForDNameAsync(dName)
-                .ContinueWith(t => {
-                    if (t.IsFaulted)
-                    {
-                        _logger.LogError(t.Exception, "Background transcoded scan for dName {dName} failed.", dName);
-                    }
-                });
+            var scanQueued = await _scanManager.ScanTranscodedForDNameAsync(dName);
 
-            return Accepted($"Transcoded scan for dName '{dName}' has been queued for execution.");
+            if (scanQueued)
+            {
+                return Accepted($"Transcoded scan for dName '{dName}' has been queued for execution.");
+            }
+            else
+            {
+                return NotFound($"Directory for transcoded scan corresponding to dName '{dName}' not found.");
+            }
         }
     }
 }

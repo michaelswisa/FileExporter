@@ -1,6 +1,7 @@
-﻿using System.Net;
+﻿using FileExporter.Models;
 using FileExporter.Services;
 using Moq;
+using System.Net;
 
 namespace FileExporter.tests
 {
@@ -24,7 +25,7 @@ namespace FileExporter.tests
         public async Task Post_ScanEndpoints_ShouldReturnAccepted(string endpoint)
         {
             // Arrange
-            _scanManagerMock.Setup(s => s.ScanAllTypesForDNameAsync(It.IsAny<string>())).ReturnsAsync(true);
+            _scanManagerMock.Setup(s => s.ScanAllTypesForDNameAsync(It.IsAny<string>())).ReturnsAsync(new ScanAllResult { FailureScanQueued = true });
             _scanManagerMock.Setup(s => s.ScanFailuresForDNameAsync(It.IsAny<string>())).ReturnsAsync(true);
             _scanManagerMock.Setup(s => s.ScanZombiesForDNameAsync(It.IsAny<string>(), It.IsAny<ZombieType>())).ReturnsAsync(true);
             _scanManagerMock.Setup(s => s.ScanTranscodedForDNameAsync(It.IsAny<string>())).ReturnsAsync(true);
