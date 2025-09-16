@@ -147,8 +147,11 @@ namespace FileExporter.Services
                 }
 
                 foreach (var group in parentGroups) 
-                { 
-                    currentReport.GroupFolderCountsAll[group] = currentReport.GroupFolderCountsAll.GetValueOrDefault(group) + 1; 
+                {
+                    if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentReport.GroupFolderCountsAll[group] = currentReport.GroupFolderCountsAll.GetValueOrDefault(group) + 1;
+                    }
                 }
 
                 if (zombie.LastWriteTime >= DateTime.Now.AddHours(-_settings.RecentTimeWindowHours))
@@ -156,7 +159,10 @@ namespace FileExporter.Services
                     currentReport.RecentItemsFound++;
                     foreach (var group in parentGroups)
                     {
-                        currentReport.GroupFolderCountsRecent[group] = currentReport.GroupFolderCountsRecent.GetValueOrDefault(group) + 1; 
+                        if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            currentReport.GroupFolderCountsRecent[group] = currentReport.GroupFolderCountsRecent.GetValueOrDefault(group) + 1;
+                        }
                     }
                 }
             }
