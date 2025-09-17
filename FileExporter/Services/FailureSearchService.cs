@@ -97,7 +97,7 @@ namespace FileExporter.Services
                 );
         }
 
-        private void RecordGroupFolderMetrics(Dictionary<string, int> folderCounts, string rootDir, string path, string dName, string env, bool isRecent)
+        private void RecordGroupFolderMetrics(IReadOnlyDictionary<string, int> folderCounts, string rootDir, string path, string dName, string env, bool isRecent)
         {
             var currentKeys = new HashSet<string>();
             var metricKey = $"{dName}_failures_{isRecent}";
@@ -127,7 +127,7 @@ namespace FileExporter.Services
 
                 failure.Image = _fileHelper.FindImageInDirectory(failure.Path);
 
-                currentReport.TotalItemsFound++;
+                currentReport.IncrementTotalItems();
                 if (currentReport.TotalItemsFound % _settings.ProgressLogThreshold == 0)
                 {
                     _logger.LogInformation($"Failure scan in progress for dName '{context.DName}'. Found {currentReport.TotalItemsFound} failures so far...");
@@ -137,25 +137,32 @@ namespace FileExporter.Services
                 {
                     if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        currentReport.GroupFolderCountsAll[group] = currentReport.GroupFolderCountsAll.GetValueOrDefault(group) + 1;
+                        currentReport.GroupFolderCountsAll.AddOrUpdate(group, 1, (key, count) => count + 1);
                     }
                 }
 
-                context.AllWriter.WritePropertyName(failure.Path);
-                JsonSerializer.Serialize(context.AllWriter, new { reason = failure.Reason, image = failure.Image, lastWriteTime = failure.LastWriteTime }, _jsonOptions);
+                lock (context.AllWriter)
+                {
+                    context.AllWriter.WritePropertyName(failure.Path);
+                    JsonSerializer.Serialize(context.AllWriter, new { reason = failure.Reason, image = failure.Image, lastWriteTime = failure.LastWriteTime }, _jsonOptions);
+                }
 
                 if (failure.LastWriteTime >= DateTime.Now.AddHours(-_settings.RecentTimeWindowHours))
                 {
-                    currentReport.RecentItemsFound++;
+                    currentReport.IncrementRecentItems();
                     foreach (var group in parentGroups) 
                     {
                         if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
                         {
-                            currentReport.GroupFolderCountsRecent[group] = currentReport.GroupFolderCountsRecent.GetValueOrDefault(group) + 1;
+                            currentReport.GroupFolderCountsRecent.AddOrUpdate(group, 1, (key, count) => count + 1);
                         }
                     }
-                    context.RecentWriter.WritePropertyName(failure.Path);
-                    JsonSerializer.Serialize(context.RecentWriter, new { reason = failure.Reason, image = failure.Image, lastWriteTime = failure.LastWriteTime }, _jsonOptions);
+
+                    lock (context.RecentWriter)
+                    {
+                        context.RecentWriter.WritePropertyName(failure.Path);
+                        JsonSerializer.Serialize(context.RecentWriter, new { reason = failure.Reason, image = failure.Image, lastWriteTime = failure.LastWriteTime }, _jsonOptions);
+                    }
                 }
             }
         }

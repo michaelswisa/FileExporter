@@ -31,6 +31,9 @@ namespace FileExporter.Services
             ScanReport report,
             Func<string, List<string>, ScanReport, Task> processPathAsync)
         {
+            int maxConcurrency = _settings.MaxConcurrentDirectoryScans;
+            using var semaphore = new SemaphoreSlim(maxConcurrency);
+
             var stack = new Stack<(string path, int depth, List<string> parentGroups)>();
             stack.Push((rootPath, 0, new List<string>()));
 
@@ -38,7 +41,7 @@ namespace FileExporter.Services
 
             while (stack.Count > 0)
             {
-                if (report.TotalItemsFound > _settings.MaxFailures) 
+                if (report.TotalItemsFound > _settings.MaxFailures)
                 {
                     _logger.LogInformation($"Reached MaxFailures limit of {_settings.MaxFailures}. Stopping traversal for {dName}.");
                     break;
@@ -49,7 +52,18 @@ namespace FileExporter.Services
                 {
                     if (depth > 0)
                     {
-                        await processPathAsync(currentPath, parentGroups, report);
+                        await semaphore.WaitAsync();
+
+                        _ = processPathAsync(currentPath, parentGroups, report)
+                            .ContinueWith(t =>
+                            {
+                                if (t.IsFaulted)
+                                {
+                                    _logger.LogError(t.Exception, "Error processing path in parallel: {CurrentPath}", currentPath);
+                                }
+                                // This task is done, so it releases its slot.
+                                semaphore.Release();
+                            });
                     }
 
                     if (depth < maxDepth)
@@ -71,6 +85,12 @@ namespace FileExporter.Services
                     _logger.LogError(ex, "Error processing path during traversal: {CurrentPath}", currentPath);
                 }
             }
+
+            for (int i = 0; i < maxConcurrency; i++)
+            {
+                await semaphore.WaitAsync();
+            }
+
             return report;
         }
 

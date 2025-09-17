@@ -94,7 +94,7 @@ namespace FileExporter.Services
             }
         }
 
-        private void RecordGroupFolderZombieMetrics(Dictionary<string, int> folderCounts, string rootDir, string path, string dName, string env, bool isRecent, ZombieType? zombieType)
+        private void RecordGroupFolderZombieMetrics(IReadOnlyDictionary<string, int> folderCounts, string rootDir, string path, string dName, string env, bool isRecent, ZombieType? zombieType)
         {
             var currentKeys = new HashSet<string>();
             var metricKey = $"{dName}_{zombieType}_{isRecent}";
@@ -140,7 +140,7 @@ namespace FileExporter.Services
             {
                 _logger.LogDebug($"Zombie confirmed at {zombie.Path}. Age: {zombie.TimeSinceCreation:F2} mins");
 
-                currentReport.TotalItemsFound++;
+                currentReport.IncrementTotalItems();
                 if (currentReport.TotalItemsFound % _settings.ProgressLogThreshold == 0)
                 {
                     _logger.LogInformation($"Zombie scan in progress for dName '{dName}'. Found {currentReport.TotalItemsFound}");
@@ -150,18 +150,18 @@ namespace FileExporter.Services
                 {
                     if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        currentReport.GroupFolderCountsAll[group] = currentReport.GroupFolderCountsAll.GetValueOrDefault(group) + 1;
+                        currentReport.GroupFolderCountsAll.AddOrUpdate(group, 1, (key, count) => count + 1);
                     }
                 }
 
                 if (zombie.LastWriteTime >= DateTime.Now.AddHours(-_settings.RecentTimeWindowHours))
                 {
-                    currentReport.RecentItemsFound++;
+                    currentReport.IncrementRecentItems();
                     foreach (var group in parentGroups)
                     {
                         if (!group.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
                         {
-                            currentReport.GroupFolderCountsRecent[group] = currentReport.GroupFolderCountsRecent.GetValueOrDefault(group) + 1;
+                            currentReport.GroupFolderCountsRecent.AddOrUpdate(group, 1, (key, count) => count + 1);
                         }
                     }
                 }

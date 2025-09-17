@@ -14,5 +14,6 @@
         public int ZombieTimeThresholdMinutes { get; set; }
         public int ScanIntervalMinutes { get; set; }
         public int ProgressLogThreshold { get; set; }
+        public int MaxConcurrentDirectoryScans { get; set; } = Environment.ProcessorCount;
     }
 }
