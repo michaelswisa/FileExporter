@@ -13,8 +13,8 @@ namespace FileExporter.Services
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
 
-        public FailureSearchService(IOptions<Settings> settings, ILogger<FailureSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
-            : base(settings, logger, metricsManager, fileHelper)
+        public FailureSearchService(IOptions<Settings> settings, ILogger<FailureSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper, ITraversalService traversalService)
+            : base(settings, logger, metricsManager, fileHelper, traversalService)
         {
         }
 
@@ -46,7 +46,7 @@ namespace FileExporter.Services
                     recentWriter.WriteStartObject();
                     var scanContextForTraversal = new FailureScanContext(allWriter, recentWriter, normalizedDName);
 
-                    report = await TraverseAndAggregateAsync(path, normalizedDName, new ScanReport(),
+                    report = await TraverseAndAggregateAsync(path, normalizedDName,
                             (currentPath, parentGroups, currentReport) =>
                             ProcessFailurePathAsync(currentPath, parentGroups, currentReport, scanContextForTraversal));
 

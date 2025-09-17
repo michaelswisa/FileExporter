@@ -17,6 +17,7 @@ public class Program
         builder.Services.AddSingleton<IFailureSearchService, FailureSearchService>();
         builder.Services.AddSingleton<IZombieSearchService, ZombieSearchService>();
         builder.Services.AddSingleton<ITranscodedSearchService, TranscodedSearchService>();
+        builder.Services.AddSingleton<ITraversalService, TraversalService>();
         builder.Services.AddScoped<ScanManagerService>();
 
         builder.Services.AddHostedService<FileScanningWorker>();

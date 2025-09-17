@@ -6,8 +6,8 @@ namespace FileExporter.Services
 {
     public class ZombieSearchService : SearchServiceBase, IZombieSearchService
     {
-        public ZombieSearchService(IOptions<Settings> settings, ILogger<ZombieSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
-            : base(settings, logger, metricsManager, fileHelper)
+        public ZombieSearchService(IOptions<Settings> settings, ILogger<ZombieSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper, ITraversalService traversalService)
+            : base(settings, logger, metricsManager, fileHelper, traversalService)
         {
         }
 
@@ -24,7 +24,7 @@ namespace FileExporter.Services
 
             try
             {
-                var report = await TraverseAndAggregateAsync(path, normalizedDName, new ScanReport(),
+                var report = await TraverseAndAggregateAsync(path, normalizedDName,
                     (currentPath, parentGroups, currentReport) =>
                     ProcessZombiePathAsync(currentPath, parentGroups, currentReport, normalizedDName, zombieType));
 

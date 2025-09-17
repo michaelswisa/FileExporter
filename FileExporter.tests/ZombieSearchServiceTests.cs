@@ -13,6 +13,7 @@ namespace FileExporter.tests
         private readonly Mock<ILogger<ZombieSearchService>> _loggerMock;
         private readonly Mock<IMetricsManager> _metricsManagerMock;
         private readonly Mock<IFileHelper> _fileHelperMock;
+        private readonly Mock<ITraversalService> _traversalServiceMock;
         private readonly ZombieSearchService _service;
         private readonly Settings _settings;
 
@@ -22,19 +23,20 @@ namespace FileExporter.tests
             _loggerMock = new Mock<ILogger<ZombieSearchService>>();
             _metricsManagerMock = new Mock<IMetricsManager>();
             _fileHelperMock = new Mock<IFileHelper>();
+            _traversalServiceMock = new Mock<ITraversalService>();
 
             _settings = new Settings
             {
                 MaxFailures = 100,
                 MaxDepth = 3,
                 RecentTimeWindowHours = 24,
-                ZombieTimeThresholdMinutes = 60, // Default threshold is 60 minutes
+                ZombieTimeThresholdMinutes = 60,
                 DepthGroupDNnames = new List<string> { "zombie-dname" },
                 ProgressLogThreshold = 10,
                 ZombieThresholdsByDName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-            {
-                { "special-dname", 120 } // Specific threshold is 120 minutes
-            }
+                {
+                    { "special-dname", 120 }
+                }
             };
             _settingsMock.Setup(s => s.Value).Returns(_settings);
 
@@ -42,11 +44,11 @@ namespace FileExporter.tests
                 _settingsMock.Object,
                 _loggerMock.Object,
                 _metricsManagerMock.Object,
-                _fileHelperMock.Object
+                _fileHelperMock.Object,
+                _traversalServiceMock.Object
             );
         }
 
-        // This is the main integration-style test we already have. It's good and should stay.
         [Fact]
         public async Task SearchFolderAsync_WithAggregation_ShouldRecordCorrectGroupMetrics()
         {
@@ -58,16 +60,11 @@ namespace FileExporter.tests
             var expectedNormalizedDName = "Zombie-dname";
 
             var group1Path = Path.Combine(scanPath, "Group1");
-            var zombie1Path = Path.Combine(group1Path, "Zombie1");
+            var zombie1Path = Path.Combine(group1Path, "Zombie1"); // Recent zombie
 
             var group2Path = Path.Combine(scanPath, "Group2");
-            var zombie2Path = Path.Combine(group2Path, "Zombie2");
+            var zombie2Path = Path.Combine(group2Path, "Zombie2"); // Old zombie
             var notZombiePath = Path.Combine(group2Path, "NotZombie");
-
-            _fileHelperMock.Setup(h => h.GetSubDirectories(scanPath)).ReturnsAsync(new[] { "Group1", "Group2" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(group1Path)).ReturnsAsync(new[] { "Zombie1" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(group2Path)).ReturnsAsync(new[] { "Zombie2", "NotZombie" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(It.Is<string>(s => s.Contains("Zombie") || s.Contains("NotZombie")))).ReturnsAsync(Enumerable.Empty<string>());
 
             _fileHelperMock.Setup(h => h.IsInObservedNotFailed(zombie1Path)).ReturnsAsync(true);
             _fileHelperMock.Setup(h => h.GetFileNameContaining(zombie1Path, "observed")).ReturnsAsync("file.Observed");
@@ -81,23 +78,35 @@ namespace FileExporter.tests
             _fileHelperMock.Setup(h => h.GetFileNameContaining(notZombiePath, "observed")).ReturnsAsync("file.Observed");
             _fileHelperMock.Setup(h => h.GetFileLastWriteTimeAsync(Path.Combine(notZombiePath, "file.Observed"))).ReturnsAsync(DateTime.Now.AddMinutes(-_settings.ZombieTimeThresholdMinutes + 5));
 
+            // --- START OF CHANGE: Applying the correct mock pattern ---
+            var populatedReport = new ScanReport();
+            _traversalServiceMock.Setup(t => t.TraverseAndAggregateAsync(scanPath, expectedNormalizedDName, It.IsAny<Func<string, List<string>, ScanReport, Task>>()))
+                .Callback<string, string, Func<string, List<string>, ScanReport, Task>>(async (path, d, processFunc) =>
+                {
+                    await processFunc(zombie1Path, new List<string> { group1Path }, populatedReport);
+                    await processFunc(zombie2Path, new List<string> { group2Path }, populatedReport);
+                    await processFunc(notZombiePath, new List<string> { group2Path }, populatedReport);
+                })
+                .ReturnsAsync(populatedReport);
+            // --- END OF CHANGE ---
+
             // ACT
             await _service.SearchFolderForObservedZombiesAsync(rootDir, scanPath, dName, env);
 
             // ASSERT
             _metricsManagerMock.Verify(m => m.SetGaugeValue("total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[1] == expectedNormalizedDName && v[3] == "false" && v[4] == "Observed"), 2), Times.Once);
-
             _metricsManagerMock.Verify(m => m.SetGaugeValue("total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[1] == expectedNormalizedDName && v[3] == "true" && v[4] == "Observed"), 1), Times.Once);
 
             var group1RelativePath = Path.GetRelativePath(rootDir, group1Path).Replace(Path.DirectorySeparatorChar, '/');
             _metricsManagerMock.Verify(m => m.SetGaugeValue("n_zombies_in_group_folder", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[3] == group1RelativePath && v[4] == "false"), 1), Times.Once);
-
             _metricsManagerMock.Verify(m => m.SetGaugeValue("n_zombies_in_group_folder", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[3] == group1RelativePath && v[4] == "true"), 1), Times.Once);
 
             var group2RelativePath = Path.GetRelativePath(rootDir, group2Path).Replace(Path.DirectorySeparatorChar, '/');
             _metricsManagerMock.Verify(m => m.SetGaugeValue("n_zombies_in_group_folder", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[3] == group2RelativePath && v[4] == "false"), 1), Times.Once);
+            _metricsManagerMock.Verify(m => m.SetGaugeValue("n_zombies_in_group_folder", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(v => v[3] == group2RelativePath && v[4] == "true"), 0), Times.Never()); // Updated to Times.Never for clarity
         }
 
+        // --- START OF CHANGE: Adding Traversal Mock to smaller tests ---
         [Fact]
         public async Task ShouldDetect_NonObservedZombie_WhenFolderIsEmptyAndOldEnough()
         {
@@ -106,22 +115,22 @@ namespace FileExporter.tests
             var scanPath = Path.Combine("base", "scan", "path");
             var zombieFolderPath = Path.Combine(scanPath, "zombie-folder");
 
-            // This directory is old enough to be a zombie
-            var oldDirectoryWriteTime = DateTime.Now.AddMinutes(-_settings.ZombieTimeThresholdMinutes - 5);
+            _fileHelperMock.Setup(h => h.NotObservedAndNotFailed(zombieFolderPath)).ReturnsAsync(true);
+            _fileHelperMock.Setup(h => h.GetDirectoryLastWriteTimeAsync(zombieFolderPath)).ReturnsAsync(DateTime.Now.AddMinutes(-_settings.ZombieTimeThresholdMinutes - 5));
 
-            _fileHelperMock.Setup(h => h.GetSubDirectories(scanPath)).ReturnsAsync(new[] { "zombie-folder" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(zombieFolderPath)).ReturnsAsync(Enumerable.Empty<string>()); // It has no subdirectories
-            _fileHelperMock.Setup(h => h.NotObservedAndNotFailed(zombieFolderPath)).ReturnsAsync(true); // No 'observed' or 'fail' files
-            _fileHelperMock.Setup(h => h.GetDirectoryLastWriteTimeAsync(zombieFolderPath)).ReturnsAsync(oldDirectoryWriteTime);
+            var populatedReport = new ScanReport();
+            _traversalServiceMock.Setup(t => t.TraverseAndAggregateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Func<string, List<string>, ScanReport, Task>>()))
+                .Callback<string, string, Func<string, List<string>, ScanReport, Task>>(async (path, d, processFunc) =>
+                {
+                    await processFunc(zombieFolderPath, new List<string> { scanPath }, populatedReport);
+                })
+                .ReturnsAsync(populatedReport);
 
             // ACT
             await _service.SearchFolderForNonObservedZombiesAsync("base", scanPath, dName, "prod");
 
             // ASSERT
-            // Verify that ONE zombie was reported.
-            _metricsManagerMock.Verify(m => m.SetGaugeValue(
-                "total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(),
-                It.Is<string[]>(vals => vals[3] == "false" && vals[4] == "Non_Observed"), 1), Times.Once);
+            _metricsManagerMock.Verify(m => m.SetGaugeValue("total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(vals => vals[3] == "false" && vals[4] == "Non_Observed"), 1), Times.Once);
         }
 
         [Fact]
@@ -132,51 +141,51 @@ namespace FileExporter.tests
             var scanPath = Path.Combine("base", "scan", "path");
             var zombieFolderPath = Path.Combine(scanPath, "zombie-folder");
 
-            // This folder is younger than the threshold, so it's NOT a zombie
-            var recentFileWriteTime = DateTime.Now.AddMinutes(-_settings.ZombieTimeThresholdMinutes + 5);
-
-            _fileHelperMock.Setup(h => h.GetSubDirectories(scanPath)).ReturnsAsync(new[] { "zombie-folder" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(zombieFolderPath)).ReturnsAsync(Enumerable.Empty<string>());
             _fileHelperMock.Setup(h => h.IsInObservedNotFailed(zombieFolderPath)).ReturnsAsync(true);
             _fileHelperMock.Setup(h => h.GetFileNameContaining(zombieFolderPath, "observed")).ReturnsAsync("file.observed");
-            _fileHelperMock.Setup(h => h.GetFileLastWriteTimeAsync(Path.Combine(zombieFolderPath, "file.observed"))).ReturnsAsync(recentFileWriteTime);
+            _fileHelperMock.Setup(h => h.GetFileLastWriteTimeAsync(Path.Combine(zombieFolderPath, "file.observed"))).ReturnsAsync(DateTime.Now.AddMinutes(-_settings.ZombieTimeThresholdMinutes + 5));
+
+            var populatedReport = new ScanReport();
+            _traversalServiceMock.Setup(t => t.TraverseAndAggregateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Func<string, List<string>, ScanReport, Task>>()))
+               .Callback<string, string, Func<string, List<string>, ScanReport, Task>>(async (path, d, processFunc) =>
+               {
+                   await processFunc(zombieFolderPath, new List<string> { scanPath }, populatedReport);
+               })
+               .ReturnsAsync(populatedReport);
 
             // ACT
             await _service.SearchFolderForObservedZombiesAsync("base", scanPath, dName, "prod");
 
             // ASSERT
-            // Verify that NO zombies were reported because the folder was too new.
-            _metricsManagerMock.Verify(m => m.SetGaugeValue(
-                "total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(),
-                It.Is<string[]>(vals => vals[3] == "false"), 0), Times.Once);
+            _metricsManagerMock.Verify(m => m.SetGaugeValue("total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(vals => vals[3] == "false"), 0), Times.Once);
         }
 
         [Fact]
         public async Task ShouldUseDNameSpecificThreshold_AndNotDetectAsZombie()
         {
             // ARRANGE
-            var dName = "special-dname"; // This dName has a 120-minute threshold
+            var dName = "special-dname";
             var scanPath = Path.Combine("base", "scan", "path");
             var zombieFolderPath = Path.Combine(scanPath, "zombie-folder");
 
-            // This folder's age is 90 minutes. It's older than the default (60) but YOUNGER than the specific threshold (120).
-            // Therefore, it should NOT be considered a zombie for this dName.
-            var trickyFileWriteTime = DateTime.Now.AddMinutes(-90);
-
-            _fileHelperMock.Setup(h => h.GetSubDirectories(scanPath)).ReturnsAsync(new[] { "zombie-folder" });
-            _fileHelperMock.Setup(h => h.GetSubDirectories(zombieFolderPath)).ReturnsAsync(Enumerable.Empty<string>());
             _fileHelperMock.Setup(h => h.IsInObservedNotFailed(zombieFolderPath)).ReturnsAsync(true);
             _fileHelperMock.Setup(h => h.GetFileNameContaining(zombieFolderPath, "observed")).ReturnsAsync("file.observed");
-            _fileHelperMock.Setup(h => h.GetFileLastWriteTimeAsync(Path.Combine(zombieFolderPath, "file.observed"))).ReturnsAsync(trickyFileWriteTime);
+            _fileHelperMock.Setup(h => h.GetFileLastWriteTimeAsync(Path.Combine(zombieFolderPath, "file.observed"))).ReturnsAsync(DateTime.Now.AddMinutes(-90));
+
+            var populatedReport = new ScanReport();
+            _traversalServiceMock.Setup(t => t.TraverseAndAggregateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Func<string, List<string>, ScanReport, Task>>()))
+               .Callback<string, string, Func<string, List<string>, ScanReport, Task>>(async (path, d, processFunc) =>
+               {
+                   await processFunc(zombieFolderPath, new List<string> { scanPath }, populatedReport);
+               })
+               .ReturnsAsync(populatedReport);
 
             // ACT
             await _service.SearchFolderForObservedZombiesAsync("base", scanPath, dName, "prod");
 
             // ASSERT
-            // Verify that NO zombie was reported because it didn't meet the specific 120-minute threshold.
-            _metricsManagerMock.Verify(m => m.SetGaugeValue(
-               "total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(),
-               It.Is<string[]>(vals => vals[3] == "false"), 0), Times.Once);
+            _metricsManagerMock.Verify(m => m.SetGaugeValue("total_n_zombies", It.IsAny<string>(), It.IsAny<string[]>(), It.Is<string[]>(vals => vals[3] == "false"), 0), Times.Once);
         }
+        // --- END OF CHANGE ---
     }
 }

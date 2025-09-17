@@ -6,8 +6,8 @@ namespace FileExporter.Services
 {
     public class TranscodedSearchService : SearchServiceBase, ITranscodedSearchService
     {
-        public TranscodedSearchService(IOptions<Settings> settings, ILogger<TranscodedSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper)
-            : base(settings, logger, metricsManager, fileHelper)
+        public TranscodedSearchService(IOptions<Settings> settings, ILogger<TranscodedSearchService> logger, IMetricsManager metricsManager, IFileHelper fileHelper, ITraversalService traversalService)
+            : base(settings, logger, metricsManager, fileHelper, traversalService)
         {
         }
 
